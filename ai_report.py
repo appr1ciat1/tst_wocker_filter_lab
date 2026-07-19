@@ -634,18 +634,26 @@ def generate_report(trades_df, equity_df, total_score, close_df, config,
                 b_ret = (float(bench2_sub.iloc[-1]) / float(bench2_sub.iloc[0]) - 1) * 100
                 excess2 = s_ret - b_ret
                 e2_color = "#00ff00" if excess2 > 0 else "#ff4444"
+                # ★00981A 上市於 2025-05，樣本遠短於策略的 2019~。把 14 個月
+                #   年化成三位數放在 7.5 年策略旁邊極易誤讀，故每一格都標出
+                #   實際期間，不能只在「超額」那一格寫「共存期」。
+                b2_start = pd.Timestamp(benchmark2_equity.index[0]).date()
+                b2_end = pd.Timestamp(benchmark2_equity.index[-1]).date()
+                b2_years = max((b2_end - b2_start).days / 365.25, 1e-9)
+                b2_span = f"{b2_start} ~ {b2_end}，{b2_years:.1f} 年"
+                b2_warn = ("（樣本 &lt; 2 年，年化僅供參考）" if b2_years < 2 else "")
                 benchmark2_stats_html = f"""
     <div class="stats">
         <div class="stat-card benchmark">
-            <div class="label">00981A 年化報酬</div>
+            <div class="label">00981A 年化報酬<br><small>{b2_span}{b2_warn}</small></div>
             <div class="value">{bm2_ann:+.1f}%</div>
         </div>
         <div class="stat-card benchmark">
-            <div class="label">00981A 最大回撤</div>
+            <div class="label">00981A 最大回撤<br><small>{b2_span}</small></div>
             <div class="value">{bm2_mdd:.1f}%</div>
         </div>
         <div class="stat-card benchmark">
-            <div class="label">00981A Sharpe</div>
+            <div class="label">00981A Sharpe<br><small>{b2_span}</small></div>
             <div class="value">{bm2_sharpe:.2f}</div>
         </div>
         <div class="stat-card" style="border-left-color:{e2_color}">
@@ -962,7 +970,74 @@ def generate_report(trades_df, equity_df, total_score, close_df, config,
 
     # === 產出 HTML ===
     report_date = latest_date.strftime('%Y-%m-%d')
-    cost_desc = f"買 {config.get('buy_cost', 0.001425)*100:.3f}% + 賣 {config.get('sell_cost', 0.004425)*100:.3f}%"
+
+    # ★出處（必須在 HTML 之前算好）：讓「這份數字是哪個 commit、用哪份資料算的」
+    #   直接印在頁面上，而不是只躺在 artifacts/metadata_*.json 裡。
+    try:
+        git_sha = subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD'], text=True
+        ).strip()
+    except Exception:
+        git_sha = None
+    snapshot_path = os.environ.get('TWSTK_SNAPSHOT')
+    panel_sha256 = None
+    snapshot_manifest = None
+    if snapshot_path:
+        try:
+            mdir = os.path.dirname(snapshot_path) or '.'
+            snapshot_manifest = os.path.join(mdir, 'manifest.json')
+            with open(snapshot_manifest, 'r', encoding='utf-8') as mf:
+                panel_sha256 = json.load(mf).get('panel_sha256')
+        except Exception as e:
+            print(f"   ⚠️ 無法讀取 snapshot manifest（出處將標為未知）：{e}")
+            snapshot_manifest = None
+    # ── 發布出處閘門（預設觀察模式）──
+    # 每日發布只有一個 run，算不出 PBO/DSR（那需要一組 trial），所以這裡不做
+    # 統計重算，只查「這組參數有沒有被正式驗收過、過期了沒」。
+    # observe：記錄但不阻擋。等 ablation 產生第一批紀錄、觀察一段時間知道
+    # 實際通過率後，再由 TWSTK_PUBLISH_GATE=enforce 切成阻擋，邏輯不需改。
+    gate_dict = None
+    gate_html = ""
+    try:
+        from validation import publish_gate
+        gate = publish_gate.evaluate(config, strategy=config.get('artifact_label'))
+        gate_dict = gate.to_dict()
+        print(f"   {gate.describe()}")
+        if gate.blocking:
+            raise SystemExit(
+                f"❌ 發布閘門[enforce] 擋下：{gate.status}。"
+                f"請先讓此配置通過驗收（跑 ablation_study.py 並記入 registry），"
+                f"或暫時設 TWSTK_PUBLISH_GATE=observe。"
+            )
+        _txt = {
+            "valid": f"✅ 已驗收（{gate.validated_at[:10] if gate.validated_at else '—'}"
+                     f"，PBO={gate.pbo}, DSR={gate.deflated_sharpe}）",
+            "expired": f"🟠 驗收已過期（最近一筆 {gate.validated_at[:10] if gate.validated_at else '—'}）",
+            "missing": "🔴 <b>此配置尚無通過驗收的試驗紀錄</b>（PBO／Deflated Sharpe 未驗證）",
+        }.get(gate.status, gate.status)
+        gate_html = f" | 驗收狀態：{_txt}"
+    except SystemExit:
+        raise
+    except Exception as e:                        # 閘門本身故障不該擋住發布
+        print(f"   ⚠️ 發布閘門評估失敗（略過）：{e}")
+
+    provenance_desc = (
+        f"commit <code>{(git_sha or '未知')[:12]}</code> | "
+        + (f"資料快照 <code>{panel_sha256[:16]}…</code>（四策略共讀同一份）"
+           if panel_sha256 else
+           "資料＝即時下載（<b>未經共享快照凍結，無法逐位元重現</b>）")
+        + f" | 產生於 {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        + gate_html
+    )
+
+    # ★滑價必須顯示在報表上：零滑價是很強的假設，讀者有權在頁面上看到。
+    _slip_bps = config.get('slippage', 0.0) * 1e4
+    cost_desc = (
+        f"買 {config.get('buy_cost', 0.001425)*100:.3f}%"
+        f" + 賣 {config.get('sell_cost', 0.004425)*100:.3f}%"
+        f" + 滑價 {_slip_bps:.0f}bps"
+        + ("（★零滑價名目回測）" if _slip_bps <= 0 else "")
+    )
     mode_html = f"ATR×{config.get('tp_atr_mult', 3)}/{config.get('sl_atr_mult', 1.5)}" \
         if tp_sl_mode == 'atr' else f"停利 +{tp_pct*100:.0f}% 停損 -{sl_pct*100:.0f}%"
     if config.get('trailing_stop', False):
@@ -1408,6 +1483,8 @@ def generate_report(trades_df, equity_df, total_score, close_df, config,
         <br><br>
         <b>{'v9 Hybrid Tiered' if hybrid_tiered else 'v8.5'} 方法論：</b>Entry = t+1 open | TP/SL = {mode_html} | 選股 = Top-{top_k} cross-sectional rank |{' + Portfolio Vol Target + Core-Satellite overlay |' if hybrid_tiered else ' '}
         成本 = {cost_desc} | 回測期 = {m['years']:.1f} 年 | 因子 = Mom(20d)×3 + Trend(60MA)×1
+        <br><br>
+        <b>本頁出處：</b>{provenance_desc}
     </div>
 
 </div>
@@ -1443,31 +1520,43 @@ def generate_report(trades_df, equity_df, total_score, close_df, config,
     os.makedirs('artifacts', exist_ok=True)
     date_str = latest_date.strftime('%Y%m%d')
 
-    if not trades_df.empty:
-        trades_df.to_csv(f'artifacts/trades_{date_str}.csv', index=False)
+    # ★策略標籤：四個策略原本寫同一組檔名，後跑的會蓋掉先跑的，
+    #   於是每天的稽核軌跡只留下最後一個（SURGE PRO）。加上標籤後
+    #   四份 trades/equity/signals/metadata 各自留存。
+    #   orders_<date>.json **刻意不加標籤**——paper 追蹤靠
+    #   `artifacts/orders_2*.json` 抓最後一個，那個「後蓋前」是設計而非 bug。
+    label = str(config.get('artifact_label') or '').strip()
+    sfx = f'_{label}' if label else ''
 
-    equity_df.to_csv(f'artifacts/equity_{date_str}.csv')
+    if not trades_df.empty:
+        trades_df.to_csv(f'artifacts/trades_{date_str}{sfx}.csv', index=False)
+
+    equity_df.to_csv(f'artifacts/equity_{date_str}{sfx}.csv')
 
     # 信號快照
     today_signals = total_score.loc[[latest_date]].T
     today_signals.columns = ['Score']
     today_signals = today_signals.dropna().sort_values('Score', ascending=False)
-    today_signals.to_csv(f'artifacts/signals_{date_str}.csv')
+    today_signals.to_csv(f'artifacts/signals_{date_str}{sfx}.csv')
 
     with open(f'artifacts/orders_{date_str}.json', 'w', encoding='utf-8') as f:
         json.dump({'orders': orders}, f, indent=2, ensure_ascii=False)
 
-    try:
-        git_sha = subprocess.check_output(
-            ['git', 'rev-parse', 'HEAD'], text=True
-        ).strip()
-    except Exception:
-        git_sha = None
+    # git_sha / panel_sha256 已於 HTML 產出前算好（見上方 provenance_desc），
+    # 這裡直接沿用同一組值，確保頁面與 metadata 說的是同一件事。
     metadata = {
         'created_at': datetime.now().isoformat(),
         'strategy_version': strategy_version,
         'git_sha': git_sha,
         'report_date': latest_date.strftime('%Y-%m-%d'),
+        'artifact_label': label or None,
+        'publish_gate': gate_dict,
+        'data_provenance': {
+            'snapshot': snapshot_path,
+            'manifest': snapshot_manifest,
+            'panel_sha256': panel_sha256,
+            'mode': 'shared_snapshot' if panel_sha256 else 'live_download',
+        },
         'config': config,
         'metrics': {
             'total_return': metrics.get('total_return'),
@@ -1480,13 +1569,13 @@ def generate_report(trades_df, equity_df, total_score, close_df, config,
             'total_trades': metrics.get('total_trades'),
         },
         'artifacts': {
-            'equity': f'artifacts/equity_{date_str}.csv',
-            'trades': f'artifacts/trades_{date_str}.csv' if not trades_df.empty else None,
-            'signals': f'artifacts/signals_{date_str}.csv',
+            'equity': f'artifacts/equity_{date_str}{sfx}.csv',
+            'trades': f'artifacts/trades_{date_str}{sfx}.csv' if not trades_df.empty else None,
+            'signals': f'artifacts/signals_{date_str}{sfx}.csv',
             'orders': f'artifacts/orders_{date_str}.json',
         },
     }
-    with open(f'artifacts/metadata_{date_str}.json', 'w', encoding='utf-8') as f:
+    with open(f'artifacts/metadata_{date_str}{sfx}.json', 'w', encoding='utf-8') as f:
         json.dump(metadata, f, indent=2, ensure_ascii=False, default=str)
 
     print(f"   ✅ 報表已生成：stock_report.html")
@@ -1586,8 +1675,17 @@ def parse_args():
         help='獲利保護觸發門檻 (預設: 0=停用, 0.03=+3%%後 SL 移至成本價)'
     )
     parser.add_argument(
-        '--slippage', type=float, default=0.0,
-        help='滑價模型 (預設: 0=與 V3 sweep 一致; 0.001=10bps)'
+        '--artifact-label', type=str, default='',
+        help='artifacts 檔名後綴（如 v85/guard/surge/surge_pro）。'
+             '四策略原本寫同一組檔名互相覆蓋，每天只留下最後一個的稽核軌跡；'
+             '加標籤後各自留存。orders_<date>.json 不受影響（paper 靠它抓最後一個）'
+    )
+    parser.add_argument(
+        '--slippage', type=float, default=0.002,
+        help='單邊滑價 (預設: 0.002=20bps)。★2026-07 稽核前預設為 0，'
+             '導致所有已發布績效都是零滑價的名目回測。'
+             '台股中小型股合理區間 15~30bps，取 20bps 為預設；'
+             '要重現舊數字請顯式傳 --slippage 0'
     )
     parser.add_argument(
         '--vol-parity', action='store_true',
@@ -1931,7 +2029,10 @@ def main():
     mode_str = f"動態 Universe (Top-{args.universe_size})" if use_dynamic else f"靜態 ({len(tickers)} 檔)"
     tp_sl_str = f"ATR×{args.tp_atr}/{args.sl_atr}" if args.tp_sl_mode == 'atr' \
         else f"+{args.tp*100:.0f}%/-{args.sl*100:.0f}%"
-    cost_str = f"買 {args.buy_cost*100:.3f}% 賣 {args.sell_cost*100:.3f}%"
+    # 滑價一定要出現在成本字串裡——它會被印進報表頁。零滑價是很強的假設，
+    # 不該只藏在 CLI 預設值裡讓讀報表的人看不到。
+    cost_str = (f"買 {args.buy_cost*100:.3f}% 賣 {args.sell_cost*100:.3f}%"
+                f" 滑價 {args.slippage*1e4:.0f}bps")
 
     trailing_str = f" +Trailing({args.trailing_atr}×ATR)" if args.trailing else ""
 
@@ -2125,7 +2226,13 @@ def main():
             ew_equity = ew_equity / ew_equity.iloc[0]
 
     # Phase 7: 報表產出
+    # 發布閘門的 fingerprint 必須涵蓋完整策略參數，而不只是報表上顯示的
+    # TP/SL/成本。曾經只放下面十餘個欄位，導致 regime_sizing、
+    # strong_tiers、dynamic_gap_filter 等核心參數改掉後仍沿用舊驗收紀錄。
+    # publish_gate.config_fingerprint 會排除日期、資金、檔名等執行情境鍵；
+    # 這裡採 argparse 的完整集合，新增策略參數時也會自動進 fingerprint。
     config = {
+        **vars(args),
         'tp_pct': args.tp,
         'sl_pct': args.sl,
         'max_hold_days': args.hold_days,
@@ -2139,6 +2246,8 @@ def main():
         'top_k': args.top_k,
         'buy_cost': args.buy_cost,
         'sell_cost': args.sell_cost,
+        'slippage': args.slippage,
+        'artifact_label': args.artifact_label,
         'hybrid_tiered': args.hybrid_tiered,
         'target_ann_vol': 0.15,
     }

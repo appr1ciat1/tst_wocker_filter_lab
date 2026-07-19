@@ -49,36 +49,56 @@ TRACKS = [
 _STOCK_META = None
 
 
-def _stock_meta():
-    """{bare_code: (中文名, 市場)}；來源＝法人快照 code/name/market（快取一次）。"""
+def _stock_names():
+    """{bare_code: 中文名}。
+
+    ★只負責「名字」，不負責「市場別」。
+    市場別一律走 twstk.data.symbols → security_master.json（離線、已版控、3118 檔）。
+
+    這裡曾經是 name+market 都取自法人快照 API，且包在 `except → {}` 裡；
+    API 一失敗就全部退化成 .TW，上櫃股（5274/3529/6547/4743）產生死連結。
+    現在法人快照降級為「補中文名新鮮度」的 overlay，失敗不影響市場判定。
+    """
     global _STOCK_META
     if _STOCK_META is None:
-        _STOCK_META = {}
-        try:
+        names = {}
+        try:                                    # 主來源：離線 security master
+            from twstk.data import security_master as sm
+            for code, rec in (sm.load_master(max_age_days=3650) or {}).items():
+                if rec.get("name"):
+                    names[str(code)] = rec["name"]
+        except Exception as e:
+            print(f"   ⚠️ security master 讀取失敗，中文名可能缺漏: {e}")
+        try:                                    # overlay：法人快照較新的名稱
             from twstk.data.institutional import fetch_stock_three_inst_latest
             for x in (fetch_stock_three_inst_latest() or []):
-                _STOCK_META[str(x.get("code"))] = (x.get("name", ""), str(x.get("market", "")))
+                if x.get("name"):
+                    names[str(x.get("code"))] = x["name"]
         except Exception:
-            _STOCK_META = {}
+            pass                                # 純新鮮度加值，失敗無妨
+        _STOCK_META = names
     return _STOCK_META
 
 
 def _stock_link(ticker):
-    """回傳 HTML <a>：『代碼 中文名』，點擊跳 Yahoo Finance（上市.TW / 上櫃.TWO）。"""
+    """回傳 HTML：『代碼 中文名』，可判定市場時才給 Yahoo Finance 連結。
+
+    ★市場判不出來時回傳純文字，不預設 .TW——寧可不給連結，也不要給死連結。
+    """
     if ticker is None or str(ticker).strip() in ("", "None", "-"):
         return "-"
+    from twstk.data.symbols import strip_market_suffix, yahoo_symbol
+
     raw = str(ticker)
-    code = raw.split(".")[0]
-    name, market = _stock_meta().get(code, ("", ""))
-    if raw.endswith(".TWO"):
-        suf = ".TWO"
-    elif raw.endswith(".TW"):
-        suf = ".TW"
-    else:
-        suf = ".TWO" if market.upper() in ("TPEX", "OTC", "TWO", "櫃買", "上櫃") else ".TW"
-    url = f"https://tw.stock.yahoo.com/quote/{code}{suf}"
+    code = strip_market_suffix(raw)
+    name = _stock_names().get(code, "")
     label = f"{code}{('&nbsp;' + name) if name else ''}"
-    return f"<a href='{url}' target='_blank' rel='noopener'>{label}</a>"
+
+    sym = yahoo_symbol(raw)
+    if not sym:
+        return f"<span title='市場別未知，未提供連結'>{label}</span>"
+    return (f"<a href='https://tw.stock.yahoo.com/quote/{sym}'"
+            f" target='_blank' rel='noopener'>{label}</a>")
 
 
 def _downsample(dates, values, step):

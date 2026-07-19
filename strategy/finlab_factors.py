@@ -17,6 +17,8 @@ FinLab 啟發因子模組 (FinLab-Inspired Factors)
 import pandas as pd
 import numpy as np
 
+from strategy.ai_strategy import strip_market_suffix
+
 
 def compute_rsi(close_df, period=20):
     """
@@ -167,7 +169,9 @@ def fetch_value_data(tickers, close_df):
         for tw_t in batch:
             try:
                 info = yf.Ticker(tw_t).info
-                t = tw_t.replace('.TW', '')
+                # 走 canonical helper：此處目前只組 .TW，但若日後補上 .TWO
+                # fallback，手刻 replace('.TW','') 會重現 '5274O' 那個 bug。
+                t = strip_market_suffix(tw_t)
 
                 # Book Value Per Share → 用來算 PB
                 bvps = info.get('bookValue', None)

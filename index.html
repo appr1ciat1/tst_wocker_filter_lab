@@ -42,31 +42,32 @@
 <body>
   <div class="wrap">
     <h1>AI 台股量化交易</h1>
-    <p class="sub">四個正式策略 + 五個單因子隔離研究／30萬執行版本。原版不覆蓋，每日收盤後自動更新。</p>
+    <p class="sub">四個正式策略 + 五個單因子隔離研究／30萬執行版本。原版不覆蓋。</p>
+    <p class="sub" data-auto="provenance">卡片數字由 build_index.py 直接讀自各策略報表 · 資料日 2026-07-17 · 產生於 2026-07-19 · commit e83434d。點進報表可見完整成本假設與逐筆交易。</p>
     <div class="grid">
       <a class="card" href="report_surge_pro.html">
         <span class="tag surgepro">SURGE PRO · 追最高報酬</span>
         <p class="name">mom_surge_pro</p>
         <p class="desc">SURGE 去風險不變 + 更激進分段加碼（弱 0% / 強 12.5% / 更強 17% / 最強 18.5%）。報酬最高，2022 較弱。📈 Paper 模擬追蹤此策略。</p>
-        <p class="stat">全期 年化 <b>67.1%</b> · MDD <b>-22.7%</b> · Calmar <b>2.96</b></p>
+        <p class="stat" data-auto="surge_pro">全期 年化 <b>+58.0%</b> · MDD <b>-19.1%</b> · Calmar <b>3.04</b></p>
       </a>
       <a class="card" href="report_surge.html">
         <span class="tag surge">SURGE · 追報酬</span>
         <p class="name">mom_surge</p>
         <p class="desc">去風險 + 分段強勢加碼（弱 0% / 強 12.5% / 更強 14.5% / 最強 17%）。</p>
-        <p class="stat">全期 年化 <b>58.8%</b> · MDD <b>-21.5%</b> · Calmar <b>2.73</b></p>
+        <p class="stat" data-auto="surge">全期 年化 <b>+49.5%</b> · MDD <b>-25.7%</b> · Calmar <b>1.92</b></p>
       </a>
       <a class="card" href="report_guard.html">
         <span class="tag guard">GUARD · 最穩健</span>
         <p class="name">mom_guard</p>
         <p class="desc">v8.5 + 弱勢去風險（最弱全出 + breadth + 放寬停損）+ 相關性分散選股（同聚落 ≤2 檔），不加碼。</p>
-        <p class="stat">全期 年化 <b>51.6%</b> · MDD <b>-26.8%</b> · Calmar <b>1.93</b></p>
+        <p class="stat" data-auto="guard">全期 年化 <b>+46.7%</b> · MDD <b>-24.4%</b> · Calmar <b>1.91</b></p>
       </a>
       <a class="card" href="report_v85.html">
         <span class="tag base">v8.5 · 基準</span>
         <p class="name">v8.5 baseline</p>
         <p class="desc">純動量 v8.5（binary regime，無去風險 / 無加碼）+ 當日信號 / 籌碼 / 新聞標注。優化前基準。</p>
-        <p class="stat">全期 年化 <b>40.2%</b> · MDD <b>-41.1%</b> · Calmar <b>0.98</b></p>
+        <p class="stat" data-auto="v85">全期 年化 <b>+39.3%</b> · MDD <b>-39.8%</b> · Calmar <b>0.99</b></p>
       </a>
       <a class="card" href="paper_trading.html">
         <span class="tag paper">Paper · SURGE PRO</span>

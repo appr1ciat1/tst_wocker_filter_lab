@@ -110,12 +110,9 @@ def fetch_latest_prices(tickers):
                             parsed[ticker] = float(series.iloc[-1])
             return parsed
 
-        tw_symbols = {t: f"{t}.TW" for t in tickers}
-        prices.update(read_prices(tw_symbols))
-        missing = [t for t in tickers if t not in prices]
-        if missing:
-            two_symbols = {t: f"{t}.TWO" for t in missing}
-            prices.update(read_prices(two_symbols))
+        from twstk.data.symbols import probe_tw_then_two
+        prices.update(probe_tw_then_two(
+            tickers, read_prices, warn_label="最新價格無法取得"))
     except Exception as e:
         print(f"   ⚠️ 最新價格下載失敗，未實現損益將用成本估算: {e}")
     return prices

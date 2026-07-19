@@ -38,9 +38,25 @@ def _prepare_returns(returns_by_trial: dict[str, pd.Series] | pd.DataFrame) -> p
         df = returns_by_trial.copy()
     else:
         df = pd.DataFrame({name: pd.Series(series) for name, series in returns_by_trial.items()})
-    df = df.replace([np.inf, -np.inf], np.nan).dropna(how="all")
-    df = df.dropna(axis=1, how="all")
+    df = df.replace([np.inf, -np.inf], np.nan)
     df.columns = [str(col) for col in df.columns]
+    if df.columns.duplicated().any():
+        raise ValueError("trial names must be unique")
+    if df.index.duplicated().any():
+        raise ValueError("return dates must be unique")
+    empty = [str(c) for c in df.columns if df[c].isna().all()]
+    if empty:
+        raise ValueError(f"trials contain no valid returns: {empty}")
+    if df.isna().any().any():
+        missing = {
+            str(c): int(df[c].isna().sum())
+            for c in df.columns if df[c].isna().any()
+        }
+        raise ValueError(
+            "CSCV requires identical, finite return dates for every trial; "
+            f"missing/non-finite counts={missing}"
+        )
+    df = df.sort_index()
     return df
 
 
@@ -78,19 +94,10 @@ def compute_pbo(
         raise ValueError("n_splits must be even for CSCV")
 
     split_indices = np.array_split(np.arange(n_obs), n_splits)
-    all_combos = list(itertools.combinations(range(n_splits), n_splits // 2))
-    # CSCV combinations are symmetric. Keep exactly one side of each
-    # complement pair so train/test reversals are not double-counted.
-    combos = []
-    seen_pairs = set()
+    # 標準 CSCV 保留全部 C(S, S/2) 組。某 combo 的 complement 不是重複：
+    # train/test 互換後，in-sample winner 可能不同，必須各自計入。
+    combos = list(itertools.combinations(range(n_splits), n_splits // 2))
     all_split_set = set(range(n_splits))
-    for combo in all_combos:
-        complement = tuple(sorted(all_split_set - set(combo)))
-        pair_key = tuple(sorted((combo, complement)))
-        if pair_key in seen_pairs:
-            continue
-        seen_pairs.add(pair_key)
-        combos.append(combo)
 
     logits: list[float] = []
     selected_trials: list[str] = []
@@ -116,9 +123,12 @@ def compute_pbo(
         if not math.isfinite(selected_test_score) or valid_test_scores.empty:
             continue
 
-        percentile = float((valid_test_scores <= selected_test_score).sum() / len(valid_test_scores))
-        percentile = min(max(percentile, 1e-12), 1 - 1e-12)
-        logit = math.log(percentile / (1.0 - percentile))
+        # OOS rank 採 average ties；omega=rank/(N+1) 可避免最佳/最差落在
+        # 0 或 1 造成無限 logit，並對稱地判定 lower half。
+        ranks = valid_test_scores.rank(method="average", ascending=True)
+        omega = float(ranks[selected] / (len(valid_test_scores) + 1.0))
+        omega = min(max(omega, 1e-12), 1 - 1e-12)
+        logit = math.log(omega / (1.0 - omega))
 
         logits.append(logit)
         selected_trials.append(selected)
@@ -128,7 +138,7 @@ def compute_pbo(
             "selected_trial": selected,
             "train_metric": float(train_scores[selected]),
             "test_metric": selected_test_score,
-            "test_percentile": percentile,
+            "test_percentile": omega,
             "logit": logit,
         })
 

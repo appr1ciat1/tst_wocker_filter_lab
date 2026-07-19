@@ -284,6 +284,20 @@ class ExperimentRegistry:
                 ON experiment_trials(experiment_id)
                 """
             )
+            # ── 向後相容的欄位遷移 ──
+            # CREATE TABLE IF NOT EXISTS 不會替既有 DB 補欄位，需明確 ALTER。
+            # config_fingerprint 供 validation/publish_gate 查「這組配置有沒有
+            # 被驗收過」；舊 DB 補上後為 NULL，狀態即 missing（正確行為）。
+            existing = {r[1] for r in conn.execute("PRAGMA table_info(experiments)")}
+            for col, decl in (("config_fingerprint", "TEXT"),):
+                if col not in existing:
+                    conn.execute(f"ALTER TABLE experiments ADD COLUMN {col} {decl}")
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_experiments_fingerprint
+                ON experiments(config_fingerprint)
+                """
+            )
             conn.execute(
                 "INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
                 ("schema_version", str(SCHEMA_VERSION)),
@@ -315,10 +329,18 @@ class ExperimentRegistry:
         trials: list[dict[str, Any]] | None = None,
         repo_root: str | os.PathLike[str] | None = None,
         data_paths: Iterable[str | os.PathLike[str]] | None = None,
+        config: dict[str, Any] | None = None,
+        config_fingerprint: str | None = None,
     ) -> str:
         experiment_id = experiment_id or make_experiment_id()
         metrics = metrics or {}
         git = git_info(repo_root)
+
+        # 發布閘門靠 fingerprint 反查驗收紀錄；給 config 就自動算，
+        # 避免每個呼叫端各自實作一份雜湊（那會是另一種雙重真相）。
+        if config_fingerprint is None and config is not None:
+            from validation.publish_gate import config_fingerprint as _fp
+            config_fingerprint = _fp(config)
 
         if number_of_trials is None and trials is not None:
             number_of_trials = len(trials)
@@ -355,6 +377,9 @@ class ExperimentRegistry:
             "metrics_json": dumps_json(metrics),
             "command": command,
             "notes": notes,
+            # 供 validation/publish_gate 反查「這組配置有沒有被驗收過」。
+            # 未指定時由 config 自動計算；兩者都無則留 NULL（狀態＝missing）。
+            "config_fingerprint": config_fingerprint,
         }
 
         columns = list(row.keys())
@@ -427,6 +452,77 @@ class ExperimentRegistry:
             )
 
 
+DEFAULT_INDEX_PATH = "experiments_index.jsonl"
+
+
+def export_index(db_path: str | os.PathLike[str] = DEFAULT_REGISTRY_PATH,
+                 out_path: str | os.PathLike[str] = DEFAULT_INDEX_PATH) -> int:
+    """把 registry 匯出成**可進 git 的純文字索引**（JSONL，一列一個 trial）。
+
+    為什麼要有這一層（2026-07-19 稽核）：
+      PBO/CSCV 要求「當初選出贏家時評估過的全部試驗集合」。這份證據
+      一旦沒留，事後補不回來——不像沒跑 PBO 可以補跑。
+
+      但完整 registry 含每個 trial 的日報酬，實測一次 24-trial sweep 就
+      2.0 MB，季度 4 次 = 8 MB/年；SQLite 是 binary，git 無法 delta 壓縮，
+      直接 commit 會重演「repo 太大拖垮 Pages」那個坑。
+
+    所以分兩層：
+      · 本函式輸出的 JSONL（**不含日報酬**，約 5KB/次）→ 永久進 git。
+        足以回答「當初試了哪 N 組、參數為何、結果為何、PBO/DSR 多少」，
+        這正是 PBO 宣稱要能被外部檢驗的部分。
+      · 完整 .sqlite（含日報酬，可重算 PBO）→ 走 actions/upload-artifact。
+
+    冪等：每次重寫整份索引（依 created_at 排序），不做 append 以免重複。
+    回傳寫出的列數。
+    """
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return 0
+
+    rows = []
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        exps = list(conn.execute(
+            "SELECT * FROM experiments ORDER BY created_at, experiment_id"))
+        for exp in exps:
+            trials = list(conn.execute(
+                "SELECT * FROM experiment_trials WHERE experiment_id = ? "
+                "ORDER BY trial_id", (exp["experiment_id"],)))
+            base = {
+                "experiment_id": exp["experiment_id"],
+                "created_at": exp["created_at"],
+                "source": exp["source"],
+                "git_commit": exp["git_commit"],
+                "git_dirty": bool(exp["git_dirty"]),
+                "data_snapshot_id": exp["data_snapshot_id"],
+                "strategy_version": exp["strategy_version"],
+                "hypothesis": exp["hypothesis"],
+                "number_of_trials": exp["number_of_trials"],
+                "pbo": exp["pbo"],
+                "deflated_sharpe": exp["deflated_sharpe"],
+                "decision": exp["decision"],
+            }
+            for t in trials:
+                rows.append({
+                    **base,
+                    "trial_id": t["trial_id"],
+                    # ★刻意不含 daily_returns：那是體積來源，且不是「證明搜尋
+                    #   規模與結果」所必需。要重算 PBO 請取 artifact 裡的 sqlite。
+                    "parameters": json.loads(t["parameters_json"] or "{}"),
+                    "sharpe": t["sharpe"],
+                    "ann_return": t["ann_return"],
+                    "max_drawdown": t["max_drawdown"],
+                    "trial_decision": t["decision"],
+                })
+
+    out = Path(out_path)
+    with open(out, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False, sort_keys=True) + "\n")
+    return len(rows)
+
+
 def _format_row(row: sqlite3.Row) -> str:
     values = []
     for key in row.keys():
@@ -441,7 +537,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Inspect the experiment registry")
     parser.add_argument("--db", default=DEFAULT_REGISTRY_PATH)
     parser.add_argument("--latest", type=int, default=10)
+    parser.add_argument(
+        "--export-index", nargs="?", const=DEFAULT_INDEX_PATH, default=None,
+        help="把 registry 匯出成可進 git 的純文字索引（JSONL，不含日報酬）並結束",
+    )
     args = parser.parse_args()
+
+    if args.export_index is not None:
+        n = export_index(args.db, args.export_index)
+        print(f"🧾 已匯出 {n} 列 trial 索引 → {args.export_index}")
+        return 0
 
     registry = ExperimentRegistry(args.db)
     rows = registry.latest(args.latest)

@@ -82,8 +82,16 @@ check("覆蓋門：爛候選 FAIL", not gb.passed)
 # 統計門：強報酬單序列 → DSR 機率高 PASS；純噪音 → FAIL
 strong = pd.Series(0.002 + 0.005*rng.standard_normal(500))
 weak = pd.Series(0.0 + 0.02*rng.standard_normal(500))
+weak_trials = pd.DataFrame({
+    f"trial_{i}": 0.02*rng.standard_normal(500)
+    for i in range(50)
+})
 sg = statistical_gate(single_returns=strong, n_trials=1, min_dsr_prob=0.90)
-sgw = statistical_gate(single_returns=weak, n_trials=50, min_dsr_prob=0.95)
+sgw = statistical_gate(
+    returns_by_trial=weak_trials,
+    single_returns=weak,
+    min_dsr_prob=0.95,
+)
 check("統計門：強序列 PASS", sg.passed)
 check("統計門：噪音+多試驗 FAIL", not sgw.passed)
 check("統計門：無輸入視為未驗證FAIL", not statistical_gate().passed)

@@ -16,13 +16,9 @@ mom_surge_pro (SURGE PRO)：SURGE 去風險不變 + 更激進分段加碼（VIX 
                    更高、cap 1.9、hold 25）。四段式：弱 0% / 強 12.5% / 更強(breadth≥.62,VIX≤18)
                    17% / 最強(breadth≥.72,VIX≤15) 18.5%。追最高報酬，代價是 2022 較弱。
 
-驗證（2019-01→2026-06，動態 Top-60，凍結同一份資料；ai_report --eval-start 全期交叉驗證吻合）：
-  baseline v8.5 : ann 40.2% / Sharpe 1.43 / MDD -41.1% / Calmar 0.98 / 938 筆
-  mom_guard     : ann 51.2% / Sharpe 1.78 / MDD -24.7% / Calmar 2.08 / 1014 筆
-  mom_surge     : ann 58.8% / Sharpe 1.86 / MDD -21.5% / Calmar 2.73 / 839 筆
-                  PBO 0.34、DSR 0.999、最差年(2022) OOS Sharpe -0.52（baseline -1.33）
-  mom_surge_pro : ann 67.1% / Sharpe 2.01 / MDD -22.7% / Calmar 2.96 / 780 筆
-                  多元池 PBO 0.086、DSR 1.000、2022 OOS Sharpe -1.13（較 SURGE 弱、換 +8pp 年化）
+注意：舊版曾列出的 2019-01→2026-06 績效來自修正前事件時鐘與舊統計
+實作，只保留為研究沿革，不得作為目前績效宣稱。正式結果必須由凍結資料、
+修正後事件時鐘、22-trial grid，以及同批 trial 的 PBO/DSR 驗收紀錄產生。
 """
 
 from typing import Tuple
@@ -52,7 +48,8 @@ SURGE_PARAMS = dict(
     max_regime_scale=1.7, strong_tiers=[(0.65, 20.0, 1.45), (0.75, 15.0, 1.75)],
 )
 # SURGE PRO：去風險不變，但「分段加碼」更激進（放寬 VIX 門檻 28、更高倍數、cap 1.9、hold 25）。
-# 追更高報酬（全期年化 67% vs SURGE 59%），代價是 2022 那年較弱（OOS Sharpe -1.13 vs -0.52）。
+# 歷史未修正事件時鐘的舊結果曾顯示較高報酬；該數字不可作為目前績效宣稱。
+# 本版本需以凍結資料、修正後事件時鐘及正式 PBO/DSR 驗收結果為準。
 SURGE_PRO_PARAMS = dict(
     sl_atr=3.5, hold_days=25, regime_graduated=True, breadth_regime=True, regime_floor=0.0,
     dynamic_topk=True, dynamic_gap_filter=True, position_size=0.10,
@@ -124,7 +121,7 @@ class MomSurge(EngineStrategy):
 
 @register("mom_surge_pro")
 class MomSurgePro(EngineStrategy):
-    description = "SURGE PRO｜SURGE去風險不變+更激進分段加碼(弱0%/強12.5/更強17%/最強18.5%)，追最高報酬(67%)，2022較弱"
+    description = "SURGE PRO｜SURGE去風險不變+分段加碼(弱0%/強12.5/更強17%/最強18.5%)；績效待修正時鐘全期驗收"
 
     def run_engine(self, data: MarketData, exec_cfg: ExecConfig):
         return _run({**SURGE_PRO_PARAMS, **self.params}, data, exec_cfg)

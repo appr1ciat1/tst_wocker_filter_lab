@@ -45,6 +45,10 @@ on:
         description: '跳空過濾 ATR 倍數'
         required: false
         default: '1.5'
+      slippage:
+        description: '單邊滑價（0.002=20bps）。★曾經預設 0 且未顯式傳入，導致所有發布績效都是零滑價'
+        required: false
+        default: '0.002'
 
 # 防止多個 run 同時 push 造成 race condition
 concurrency:
@@ -75,16 +79,25 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # ★測試在任何資料抓取／報表產生之前跑，且不加 continue-on-error：
+      #   紅燈就整個 job 失敗，不會產生也不會發布新報表（保留前一份）。
+      #   稽核前 CI 完全沒跑過 pytest，事件時鐘穿越因此活了很久沒被發現。
+      - name: Run test suite (fail-closed)
+        run: pytest -q
+
       # 版本鎖定用：記錄本次 CI「實際解析到」的套件版本。
+      # ★2026-07-19 稽核前只鎖 5 個直接依賴，scipy/lxml/requests 等傳遞依賴全部浮動，
+      #   等於沒有真正的可重現環境。改為**全量** pip freeze。
       # 綠燈後把 requirements.lock.txt 的精確版本人工升格進 requirements.txt，
       # 即可從「大版本上限」進到「完全可重現」。刻意不自動改 requirements.txt——
       # 鎖版本是決策，需要人確認。
       - name: Record resolved dependency versions
         run: |
-          pip freeze | grep -iE "^(yfinance|pandas|numpy|matplotlib|exchange[-_]calendars)==" \
-            | sort > requirements.lock.txt
-          echo "本次 CI 解析到的版本："
-          cat requirements.lock.txt
+          echo "# $(python -V 2>&1)" > requirements.lock.txt
+          pip freeze --all | sort >> requirements.lock.txt
+          echo "本次 CI 解析到的版本（全量，含傳遞依賴）："
+          head -20 requirements.lock.txt
+          echo "... 共 $(wc -l < requirements.lock.txt) 行"
 
       - name: Restore incremental market-data caches
         uses: actions/cache@v4
@@ -156,10 +169,12 @@ jobs:
           python ai_report.py \
             --no-hybrid-tiered --no-regime-graduated --no-breadth-regime --consec-loss-limit 3 \
             --tp-atr ${{ github.event.inputs.tp_atr || '4.0' }} \
+            --artifact-label v85 \
             --sl-atr ${{ github.event.inputs.sl_atr || '3.0' }} \
             --hold-days ${{ github.event.inputs.hold_days || '20' }} \
             --top-k ${{ github.event.inputs.top_k || '7' }} \
             --gap-filter ${{ github.event.inputs.gap_filter || '1.5' }} \
+            --slippage ${{ github.event.inputs.slippage || '0.002' }} \
             --start-date 2019-01-01 --eval-start 2019-01-01
           sed -e 's#backtest_chart.png#chart_v85.png#g' \
               -e 's#AI 台股量化交易 v8\.5#AI 台股量化交易 · v8.5 基準(純動量)#g' \
@@ -174,6 +189,8 @@ jobs:
             --no-hybrid-tiered --consec-loss-limit 3 \
             --sl-atr 3.5 --regime-floor 0.0 --dynamic-topk \
             --corr-select-max 0.7 --corr-select-window 60 --corr-select-cap 2 \
+            --artifact-label guard \
+            --slippage ${{ github.event.inputs.slippage || '0.002' }} \
             --start-date 2019-01-01 --eval-start 2019-01-01
           # 保存 GUARD 的當日訂單（下方 SURGE PRO 那步會覆蓋 orders_<date>.json，故先複製給 GUARD paper 用）
           cp "$(ls -t artifacts/orders_2*.json | head -1)" artifacts/orders_guard_latest.json || true
@@ -193,6 +210,8 @@ jobs:
             --regime-sizing --strong-regime-mult 1.25 --strong-breadth-min 0.55 \
             --strong-vix-max 25.0 --max-regime-scale 1.7 \
             --strong-tiers "0.65,20,1.45;0.75,15,1.75" \
+            --artifact-label surge \
+            --slippage ${{ github.event.inputs.slippage || '0.002' }} \
             --start-date 2019-01-01 --eval-start 2019-01-01
           sed -e 's#backtest_chart.png#chart_surge.png#g' \
               -e 's#AI 台股量化交易 v8\.5#AI 台股量化交易 · SURGE 強勢加碼#g' \
@@ -210,6 +229,8 @@ jobs:
             --regime-sizing --strong-regime-mult 1.25 --strong-breadth-min 0.55 \
             --strong-vix-max 28.0 --max-regime-scale 1.9 \
             --strong-tiers "0.62,18,1.7;0.72,15,1.85" \
+            --artifact-label surge_pro \
+            --slippage ${{ github.event.inputs.slippage || '0.002' }} \
             --start-date 2019-01-01 --eval-start 2019-01-01
           # report_surge_pro.html 用自己的圖檔；保留 stock_report.html + backtest_chart.png 當主報表
           sed -e 's#backtest_chart.png#chart_surge_pro.png#g' \
@@ -218,6 +239,14 @@ jobs:
           cp backtest_chart.png chart_surge_pro.png
           # 主報表 stock_report.html 的標題也改成 SURGE PRO（它就是最強策略）
           sed -i 's#AI 台股量化交易 v8\.5#AI 台股量化交易 · SURGE PRO 追最高報酬#g' stock_report.html
+
+      # ── 著陸頁數字：直接從剛產生的四份報表回填 ──
+      # index.html 原本是手寫的、沒有任何腳本會更新，但它是 deploy 的必要檔案＝
+      # 線上著陸頁。2026-07-19 稽核時它比報表高 5~9pp（凍結於 7/16 的舊 baseline）。
+      # 必須排在四份報表之後、commit 之前。
+      - name: Rebuild landing page numbers from reports
+        if: github.event.schedule != '0 10 1 * *' && steps.twcheck.outputs.is_trading == 'true'
+        run: python build_index.py
 
       # ── 累積式「真實前瞻紀錄」──
       # paper 頁是每次重跑的『模擬』；這裡把當日報表真正發出的建議逐日追加進
@@ -265,6 +294,27 @@ jobs:
         if: github.event.schedule == '0 10 1 * *'
         run: python paper_trade.py monthly
 
+      # ── 完整逐筆軌跡：外部可下載，但不進 git ──
+      # trades（每策略 ~84K）與 equity（~53K）四份合計 ~550KB/日。
+      # commit 進 main 一年就 200MB，會拖垮 Pages 部署；改用 Actions artifact
+      # （90 天保留、可直接從 run 頁面下載）。要更長期保存再另議物件儲存。
+      # metadata 同時附一份，讓下載者不必回 git 對照。
+      - name: Upload full audit trail (trades / equity / signals)
+        if: github.event.schedule != '0 10 1 * *' && steps.twcheck.outputs.is_trading == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-trail-${{ github.run_id }}
+          retention-days: 90
+          if-no-files-found: warn
+          path: |
+            artifacts/trades_*.csv
+            artifacts/equity_*.csv
+            artifacts/signals_*.csv
+            artifacts/metadata_*.json
+            artifacts/orders_*.json
+            artifacts/snapshot_*/manifest.json
+            requirements.lock.txt
+
       - name: Cleanup old artifacts (keep last 180 days)
         run: |
           if [ -d "artifacts" ]; then
@@ -284,6 +334,14 @@ jobs:
           git add capital_rotation_alert.html capital_rotation_alert_latest.json || true
           git add capital_rotation_history_10y.json capital_rotation_*_10y.csv capital_rotation_summary_10y.json || true
           git add report_v85.html chart_v85.png report_guard.html chart_guard.png index.html || true
+          # ★可稽核出處（小檔，永久進 git；約 5KB/日）：
+          #   metadata_*.json 含 git_sha + panel_sha256 + 完整 config + metrics，
+          #   snapshot manifest 含資料 hash。有這兩者就能回答
+          #   「這份數字是哪個 commit、用哪份資料算的」。
+          #   完整 trades/equity（~550KB/日）不進 git，改走 upload-artifact，
+          #   否則一年 200MB 會重演「repo 太大拖垮 Pages」那個坑。
+          git add artifacts/metadata_*.json || true
+          git add artifacts/snapshot_*/manifest.json || true
           git add report_surge.html chart_surge.png report_surge_pro.html chart_surge_pro.png || true
           git add -u artifacts || true
 
@@ -350,6 +408,32 @@ jobs:
           LATEST_EQUITY=$(ls -t artifacts/equity_*.csv | head -1)
           python monte_carlo.py --equity "$LATEST_EQUITY" --runs 2000 --block-size 5
 
+      # ── 試驗證據留存（2026-07-19 稽核的根因修復）──
+      # PBO/CSCV 要求「當初選出贏家時評估過的全部試驗集合」。這份證據沒留就
+      # **事後補不回來**——不像沒跑 PBO 可以補跑。
+      # sweep.py 早就會寫 artifacts/experiments.sqlite，但下方原本是
+      # `git add -u artifacts`，而 `-u` 只 stage **已追蹤**的檔案；該 DB 從未
+      # 被追蹤過，所以每一季產生、每一季隨 runner 銷毀。這就是證據消失的機制。
+      # 分兩層留存：純文字索引進 git（永久、~12KB/次），完整 DB 走 artifact。
+      - name: Export experiment index (git-friendly, no daily returns)
+        if: steps.check.outputs.run == 'true'
+        run: |
+          python -m research.experiment_registry --export-index experiments_index.jsonl
+          wc -l experiments_index.jsonl
+
+      - name: Upload full experiment registry (recomputable PBO)
+        if: steps.check.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: experiment-registry-${{ github.run_id }}
+          retention-days: 90
+          if-no-files-found: warn
+          path: |
+            artifacts/experiments.sqlite
+            experiments_index.jsonl
+            factor_search_results.csv
+            ablation_results.csv
+
       - name: Upload quarterly report
         if: steps.check.outputs.run == 'true'
         run: |
@@ -359,6 +443,9 @@ jobs:
           # 不含 backtest_chart.png：generate-report 已提交它；若此處也改動會與其 rebase 衝突
           # （"could not apply"），過去正是這造成季度 run 失敗、連累 deploy 被跳過。
           git add factor_search_results.csv ablation_results.csv || true
+          # ★試驗索引必須顯式 add：`git add -u` 只 stage 已追蹤檔案，
+          #   新產生的證據永遠進不去（experiments.sqlite 就是這樣消失的）。
+          git add experiments_index.jsonl || true
           git add -u artifacts || true
 
           if git diff --cached --quiet; then

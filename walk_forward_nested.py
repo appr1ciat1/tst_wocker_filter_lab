@@ -32,7 +32,7 @@ from research.experiment_registry import (
     series_from_daily_returns,
     trial_record,
 )
-from validation.deflated_sharpe import compute_deflated_sharpe
+from validation.deflated_sharpe import annualized_sharpe, compute_deflated_sharpe
 from validation.pbo_cscv import compute_pbo
 
 
@@ -148,11 +148,22 @@ def _pbo_from_trials(trials):
     return pbo.pbo if pbo.pbo == pbo.pbo else None
 
 
-def _dsr_from_returns(daily_returns, n_trials):
+def _dsr_from_returns(daily_returns, reference_trials):
     series = series_from_daily_returns(daily_returns)
     if len(series) < 3:
         return None, None
-    dsr = compute_deflated_sharpe(series, n_trials=n_trials)
+    trial_sharpes = []
+    for trial in reference_trials:
+        trial_series = series_from_daily_returns(trial.get('daily_returns'))
+        if not trial_series.empty:
+            trial_sharpes.append(annualized_sharpe(trial_series))
+    if not trial_sharpes:
+        return None, None
+    dsr = compute_deflated_sharpe(
+        series,
+        n_trials=len(trial_sharpes),
+        trial_sharpes=trial_sharpes,
+    )
     return dsr.probability, dsr.deflated_sharpe
 
 
@@ -284,7 +295,10 @@ def main():
                 )
                 test_metrics['name'] = test_name
                 test_metrics['args'] = test_args
-                dsr_probability, dsr_z = _dsr_from_returns(test_daily_returns, len(candidates))
+                dsr_probability, dsr_z = _dsr_from_returns(
+                    test_daily_returns,
+                    train_trials,
+                )
                 test_metrics['dsr_probability'] = dsr_probability
                 test_metrics['dsr_z'] = dsr_z
                 test_metrics['fold_pbo'] = fold_pbo

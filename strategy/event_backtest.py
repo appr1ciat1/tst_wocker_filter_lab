@@ -99,7 +99,7 @@ class EventDrivenBacktester:
                  gap_filter_atr=1.5,
                  volume_confirm=False,
                  blacklist_lookback=0, blacklist_min_wr=0.25,
-                 breakeven_pct=0, slippage=0, vol_parity=False,
+                 breakeven_pct=0, slippage=0.002, vol_parity=False,
                  mean_reversion=False, dynamic_risk=False,
                  futures_hedge=False,
                  dd_pause_pct=0.10, dd_pause_days=5,
@@ -632,6 +632,50 @@ class EventDrivenBacktester:
         for i in range(60, len(dates)):
             date = dates[i]
 
+            # ── Step 0: 凍結「開盤時可知」的資金與權益 ──
+            # 事件時鐘是 t-1 close → t open → t intraday → t close。
+            # 在 t 開盤下單時，今天的 high/low/close 都還沒發生，所以：
+            #   · 不可動用今天盤中出場才會回來的現金（open_capital）
+            #   · 不可用今天收盤價估算持倉市值來決定部位大小（open_equity）
+            # 這兩個值在 Step 1/2 之前凍結，Step 3 一律只讀它們。
+            open_capital = capital
+            open_equity = capital
+            for _ot, _otr in active_trades.items():
+                _mark = close_df[_ot].iloc[i - 1]
+                if pd.isna(_mark):
+                    _mark = _otr['entry_price']
+                open_equity += _otr['shares'] * _mark
+
+            # Step 3 的「開盤持倉簿」也要在盤中出場判定前凍結。若今天 high/low
+            # 觸發停利停損，該部位在今日開盤下單時仍占用 slot、板塊額度、
+            # 相關性與風險預算；不可因為 Step 1 已偷看到盤中出場，就在同一個
+            # 今日 open 補位或重買。後續今日新進場會追加進此簿，供同日多筆
+            # 開盤委託彼此約束。
+            entry_book = {
+                ticker: dict(trade)
+                for ticker, trade in active_trades.items()
+            }
+
+            # 回撤卡／連損卡也必須在開盤前定案：今天盤中才觸發的停損、
+            # 今天收盤才算得出的回撤，都不能拿來擋今天開盤的進場。
+            # peak_equity 此刻仍是「截至 t-1 收盤」的高點（Step 4 才更新）。
+            open_dd = ((open_equity - peak_equity) / peak_equity
+                       if peak_equity > 0 else 0.0)
+            effective_dd_pause = (
+                self._last_dd_pause_pct if self.hybrid_tiered else self.dd_pause_pct
+            )
+            if open_dd < -effective_dd_pause and dd_pause_counter <= 0:
+                dd_pause_counter = self.dd_pause_days
+            # ★遞減必須在判定「今天能否進場」之前，與原始語意一致。
+            #   反過來寫會讓計數器在持續回撤中永遠 > 0（每次歸零當天就立刻
+            #   重新觸發），暫停從「每 N+1 天放行 1 天」變成「永不放行」——
+            #   實測 v8.5 交易數會從 1134 崩到 133。
+            if dd_pause_counter > 0:
+                dd_pause_counter -= 1
+            if cl_pause_counter > 0:
+                cl_pause_counter -= 1
+            entry_allowed_today = (dd_pause_counter <= 0 and cl_pause_counter <= 0)
+
             # ── Step 1: 處理持倉的出場判定（根據今日盤中高低價） ──
             exited_tickers = []
             for ticker, trade in active_trades.items():
@@ -796,27 +840,14 @@ class EventDrivenBacktester:
             for t in exited_tickers:
                 del active_trades[t]
 
-            # ── Step 2: 計算當前總權益（用於 equity-based sizing） ──
+            # ── Step 2: 盤中權益（僅供對沖等盤中邏輯使用） ──
+            # ★不可用於 Step 3 的部位 sizing 或進場閘門——那些一律走 open_equity。
+            # 回撤卡與計數器遞減已移至 Step 0（開盤前定案），peak_equity 於 Step 4 更新。
             current_equity = capital
             for ticker, trade in active_trades.items():
                 close_val = close_df[ticker].iloc[i]
                 if not pd.isna(close_val):
                     current_equity += trade['shares'] * close_val
-
-            # === 回撤竟日卡：權益距 peak 超過 N% 則暫停新倉 ===
-            peak_equity = max(peak_equity, current_equity)
-            current_dd = (current_equity - peak_equity) / peak_equity
-            effective_dd_pause = (
-                self._last_dd_pause_pct if self.hybrid_tiered else self.dd_pause_pct
-            )
-            if current_dd < -effective_dd_pause and dd_pause_counter <= 0:
-                dd_pause_counter = self.dd_pause_days
-
-            # 暫停計數器遞減
-            if dd_pause_counter > 0:
-                dd_pause_counter -= 1
-            if cl_pause_counter > 0:
-                cl_pause_counter -= 1
 
             # ── Step 2.5: Regime Deleverage：大盤翻空後分段降曝險 ──
             # ━━ FIX: 使用 t-1 大盤數據（避免同日 lookahead）━━
@@ -990,9 +1021,9 @@ class EventDrivenBacktester:
                     pass
 
             # ── Step 3: 處理今日進場（根據昨日收盤信號，今日 open 進場） ──
-            entry_allowed = (dd_pause_counter <= 0 and cl_pause_counter <= 0)
+            entry_allowed = entry_allowed_today  # 於 Step 0 開盤前定案
 
-            if len(active_trades) < max_positions and entry_allowed:
+            if len(entry_book) < max_positions and entry_allowed:
                 # ── Regime Filter + Graduated Exposure ──
                 # ━━ FIX: 使用 t-1 大盤數據（避免同日 lookahead） ━━
                 regime_ok = True
@@ -1100,7 +1131,7 @@ class EventDrivenBacktester:
                 if regime_ok:
                     # ── 動量策略（正常模式） ──
                     for ticker in close_df.columns:
-                        if ticker in active_trades:
+                        if ticker in entry_book:
                             continue
 
                         if self.blacklist_lookback > 0 and ticker in ticker_history:
@@ -1163,7 +1194,7 @@ class EventDrivenBacktester:
                     # ── 均值回歸子策略（熊市模式） ──
                     # 大盤 < 60MA 時，找超跌反彈股：RSI<30 且 5 日跌幅 > 10%
                     for ticker in close_df.columns:
-                        if ticker in active_trades:
+                        if ticker in entry_book:
                             continue
                         entry_price = open_df[ticker].iloc[i]
                         prev_close = close_df[ticker].iloc[i - 1] if i - 1 >= 0 else np.nan
@@ -1201,7 +1232,7 @@ class EventDrivenBacktester:
                                 elif mkt_val >= mkt_ma and hedge_active:
                                     # 平空單
                                     hedge_return = (hedge_entry_price / mkt_val) - 1
-                                    hedge_pnl = current_equity * 0.10 * hedge_return
+                                    hedge_pnl = open_equity * 0.10 * hedge_return
                                     capital += hedge_pnl
                                     hedge_pnl_total += hedge_pnl
                                     hedge_active = False
@@ -1210,7 +1241,7 @@ class EventDrivenBacktester:
 
                 # Top-K 選股：按分數排序，取前 top_k 名（含板塊分散）
                 candidates.sort(key=lambda x: x[1], reverse=True)
-                slots_available = max_positions - len(active_trades)
+                slots_available = max_positions - len(entry_book)
 
                 # 板塊分散：電子股不超過 sector_max_pct
                 # Dynamic sector cap: regime 越弱限制越緊
@@ -1227,7 +1258,7 @@ class EventDrivenBacktester:
                 if current_sector_cap < 1.0:
                     elec_prefixes = ('23','24','30','33','34','35','36','37',
                                      '49','61','63','64','65','66','67','68','69')
-                    active_elec = sum(1 for t in active_trades if t.startswith(elec_prefixes))
+                    active_elec = sum(1 for t in entry_book if t.startswith(elec_prefixes))
                     max_elec_total = max(1, int(max_positions * current_sector_cap))
 
                     filtered_candidates = []
@@ -1304,7 +1335,7 @@ class EventDrivenBacktester:
                     try:
                         lookback = min(20, i)
                         cand_tickers = [c[0] for c in candidates[:min(15, len(candidates))]]
-                        held_tickers = list(active_trades.keys())
+                        held_tickers = list(entry_book.keys())
                         all_tickers = list(set(cand_tickers + held_tickers))
                         valid_tickers = [t for t in all_tickers if t in close_df.columns]
 
@@ -1353,7 +1384,7 @@ class EventDrivenBacktester:
                 elif self.corr_select_max > 0:
                     # 建議A：greedy 相關性選股（與持倉∪已選 60日相關>閾值即跳過）
                     selected = self._corr_select(
-                        candidates, active_trades, close_df, i,
+                        candidates, entry_book, close_df, i,
                         min(effective_top_k, slots_available))
                 else:
                     selected = candidates[:min(effective_top_k, slots_available)]
@@ -1374,7 +1405,7 @@ class EventDrivenBacktester:
                         lookback = min(20, i)
                         if lookback >= 10:
                             sel_tickers = [s[0] for s in selected]
-                            all_held = list(active_trades.keys()) + sel_tickers
+                            all_held = list(entry_book.keys()) + sel_tickers
                             ret_slice = close_df[all_held].iloc[max(0,i-lookback):i].pct_change().dropna()
                             if len(ret_slice) >= 5:
                                 corr = ret_slice.corr()
@@ -1399,13 +1430,15 @@ class EventDrivenBacktester:
 
                 for rank_idx, (ticker, score, entry_price) in enumerate(selected):
                     # === Portfolio Heat Cap: 進場前檢查組合總風險 ===
-                    if self.max_portfolio_heat < 1.0 and active_trades:
+                    if self.max_portfolio_heat < 1.0 and entry_book:
                         heat = 0
-                        for t_ticker, t_trade in active_trades.items():
-                            t_price = close_df[t_ticker].iloc[i] if not pd.isna(close_df[t_ticker].iloc[i]) else t_trade['entry_price']
+                        for t_ticker, t_trade in entry_book.items():
+                            # 開盤時只知道 t-1 收盤，不可用今日收盤估風險
+                            t_prev = close_df[t_ticker].iloc[i - 1]
+                            t_price = t_prev if not pd.isna(t_prev) else t_trade['entry_price']
                             risk_per_share = max(0, t_price - t_trade['sl_price'])
                             heat += t_trade['shares'] * risk_per_share
-                        heat_pct = heat / current_equity if current_equity > 0 else 0
+                        heat_pct = heat / open_equity if open_equity > 0 else 0
                         if heat_pct >= self.max_portfolio_heat:
                             continue  # 組合熱度已滿，跳過新進場
 
@@ -1511,25 +1544,25 @@ class EventDrivenBacktester:
                     if self.vol_parity and atr is not None:
                         atr_val_sizing = atr[ticker].iloc[i - 1] if i - 1 >= 0 else np.nan
                         if not pd.isna(atr_val_sizing) and atr_val_sizing > 0:
-                            target_risk = current_equity * effective_pos_size
+                            target_risk = open_equity * effective_pos_size
                             risk_per_share = atr_val_sizing * self.sl_atr_mult
                             shares = target_risk / risk_per_share if risk_per_share > 0 else 0
                             trade_amount = shares * actual_entry
                         else:
-                            trade_amount = current_equity * effective_pos_size
+                            trade_amount = open_equity * effective_pos_size
                     else:
-                        trade_amount = current_equity * effective_pos_size
+                        trade_amount = open_equity * effective_pos_size
 
                     # Preserve a deliberate cash buffer for small accounts and cap gross
-                    # exposure using current marks.  Defaults are no-op for legacy versions.
+                    # exposure using marks that are known at the open (t-1 close).
                     if self.cash_reserve_pct > 0:
                         invested = 0.0
-                        for held_ticker, held_trade in active_trades.items():
-                            mark = close_df[held_ticker].iloc[i]
+                        for held_ticker, held_trade in entry_book.items():
+                            mark = close_df[held_ticker].iloc[i - 1]
                             if pd.isna(mark):
                                 mark = held_trade['entry_price']
                             invested += held_trade['shares'] * mark
-                        gross_cap = current_equity * (1.0 - self.cash_reserve_pct)
+                        gross_cap = open_equity * (1.0 - self.cash_reserve_pct)
                         trade_amount = min(trade_amount, max(0.0, gross_cap - invested))
 
                     if self.integer_shares and actual_entry > 0:
@@ -1540,7 +1573,9 @@ class EventDrivenBacktester:
 
                     actual_cost = trade_amount * (1 + self.buy_cost)  # 含買入手續費
 
-                    if capital >= actual_cost:
+                    # 只能動用開盤前已在手的現金（open_capital），不能用今天盤中
+                    # 出場才回來的錢——那筆錢在開盤下單時尚未存在。
+                    if open_capital >= actual_cost:
                         shares = trade_amount / actual_entry
 
                         # 計算 TP/SL 價格（基於實際進場價含滑價）
@@ -1571,6 +1606,7 @@ class EventDrivenBacktester:
                             continue
 
                         capital -= actual_cost
+                        open_capital -= actual_cost  # 同日後續進場的可用現金也要遞減
 
                         active_trades[ticker] = {
                             'shares': shares,
@@ -1589,6 +1625,7 @@ class EventDrivenBacktester:
                             'book': book,  # v9
                             'tiered_scale': round(tiered_scale, 4),  # v9
                         }
+                        entry_book[ticker] = active_trades[ticker]
 
             # ── Step 4: 結算今日總權益（現金 + 所有持倉市值） ──
             today_equity = capital
@@ -1596,6 +1633,9 @@ class EventDrivenBacktester:
                 close_val = close_df[ticker].iloc[i]
                 if not pd.isna(close_val):
                     today_equity += trade['shares'] * close_val
+
+            # 收盤後才更新權益高點；Step 0 的回撤卡讀到的一律是「截至 t-1」的 peak
+            peak_equity = max(peak_equity, today_equity)
 
             equity_curve.append({'Date': date, 'Equity': today_equity})
 
