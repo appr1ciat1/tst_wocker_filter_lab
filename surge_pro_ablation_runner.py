@@ -298,6 +298,59 @@ def download_vix(start: str, end_exclusive: str) -> pd.Series:
     return series
 
 
+def invalid_ohlc_mask(panel: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    close = panel["Close"]
+    valid = (
+        close.notna()
+        & panel["Open"].notna()
+        & panel["High"].notna()
+        & panel["Low"].notna()
+    )
+    upper = np.maximum(close, panel["Open"])
+    lower = np.minimum(close, panel["Open"])
+    high_close_enough = pd.DataFrame(
+        np.isclose(panel["High"], upper, rtol=1e-12, atol=1e-10),
+        index=close.index,
+        columns=close.columns,
+    )
+    low_close_enough = pd.DataFrame(
+        np.isclose(panel["Low"], lower, rtol=1e-12, atol=1e-10),
+        index=close.index,
+        columns=close.columns,
+    )
+    return (
+        valid
+        & (
+            ((panel["High"] < upper) & ~high_close_enough)
+            | ((panel["Low"] > lower) & ~low_close_enough)
+        )
+    )
+
+
+def mask_invalid_tradable_bars(
+    panel: dict[str, pd.DataFrame],
+) -> tuple[dict[str, pd.DataFrame], list[dict[str, Any]]]:
+    """Mask vendor-impossible OHLC bars instead of inventing executable prices."""
+    cleaned = {field: frame.copy() for field, frame in panel.items()}
+    invalid = invalid_ohlc_mask(cleaned)
+    anomalies: list[dict[str, Any]] = []
+    for row, column in np.argwhere(invalid.to_numpy()):
+        date = cleaned["Close"].index[row]
+        ticker = str(cleaned["Close"].columns[column])
+        anomalies.append({
+            "date": pd.Timestamp(date).strftime("%Y-%m-%d"),
+            "ticker": ticker,
+            "open": float(cleaned["Open"].iloc[row, column]),
+            "high": float(cleaned["High"].iloc[row, column]),
+            "low": float(cleaned["Low"].iloc[row, column]),
+            "close": float(cleaned["Close"].iloc[row, column]),
+            "action": "Open/High/Low/Volume masked; Close retained for marking",
+        })
+    for field in ("Open", "High", "Low", "Volume"):
+        cleaned[field] = cleaned[field].mask(invalid)
+    return cleaned, anomalies
+
+
 def validate_research_panel(panel: dict[str, pd.DataFrame], as_of: str) -> None:
     contract = validate_panel(
         panel,
@@ -327,27 +380,7 @@ def validate_research_panel(panel: dict[str, pd.DataFrame], as_of: str) -> None:
     if (panel["Volume"].dropna() < 0).any().any():
         raise RuntimeError("Volume contains negative values")
 
-    valid_ohlc = (
-        close.notna()
-        & panel["Open"].notna()
-        & panel["High"].notna()
-        & panel["Low"].notna()
-    )
-    upper = np.maximum(close, panel["Open"])
-    lower = np.minimum(close, panel["Open"])
-    high_close_enough = pd.DataFrame(
-        np.isclose(panel["High"], upper, rtol=1e-12, atol=1e-10),
-        index=close.index,
-        columns=close.columns,
-    )
-    low_close_enough = pd.DataFrame(
-        np.isclose(panel["Low"], lower, rtol=1e-12, atol=1e-10),
-        index=close.index,
-        columns=close.columns,
-    )
-    bad_high = valid_ohlc & (panel["High"] < upper) & ~high_close_enough
-    bad_low = valid_ohlc & (panel["Low"] > lower) & ~low_close_enough
-    if bad_high.any().any() or bad_low.any().any():
+    if invalid_ohlc_mask(panel).any().any():
         raise RuntimeError("OHLC price relationships are invalid")
 
     for ticker in close.columns:
@@ -420,13 +453,20 @@ def prepare_bundle(
         start_date=period["start_inclusive"],
         end_date=period["download_end_exclusive"],
     )
-    panel = {
+    raw_panel = {
         "Close": close,
         "Open": open_,
         "High": high,
         "Low": low,
         "Volume": volume,
     }
+    panel, ohlcv_anomalies = mask_invalid_tradable_bars(raw_panel)
+    if ohlcv_anomalies:
+        print(
+            f"[prepare] masked {len(ohlcv_anomalies)} vendor-impossible "
+            "OHLC bar(s) as untradable",
+            flush=True,
+        )
     validate_research_panel(panel, period["end_inclusive"])
 
     print("[prepare] downloading and freezing ^VIX", flush=True)
@@ -472,6 +512,12 @@ def prepare_bundle(
             "inject frozen VIX when regime_sizing=true; pass None when false "
             "to preserve the strategy's no-sizing semantics"
         ),
+        "ohlcv_anomaly_policy": (
+            "Vendor bars with High < max(Open,Close) or "
+            "Low > min(Open,Close), beyond float tolerance, retain Close for "
+            "marking and mask Open/High/Low/Volume as untradable."
+        ),
+        "ohlcv_anomalies": ohlcv_anomalies,
         "statistics_protocol": {
             "pbo": (
                 "CSCV S=8; all C(8,4)=70 directional train/test splits; "

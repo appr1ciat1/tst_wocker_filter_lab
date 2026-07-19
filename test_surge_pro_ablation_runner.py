@@ -12,6 +12,7 @@ from surge_pro_ablation_runner import (
     bundle_identity,
     compare_runs,
     load_grid,
+    mask_invalid_tradable_bars,
     normalize_vix,
     payload_sha256,
     persist_vix,
@@ -72,6 +73,33 @@ def test_vix_persistence_hashes_the_round_tripped_values(tmp_path):
             pd.read_csv(tmp_path / "vix.csv", index_col=0, parse_dates=True)
         )
     )
+
+
+def test_impossible_vendor_bar_is_masked_not_repriced():
+    dates = pd.bdate_range("2024-01-01", periods=2)
+    close = pd.DataFrame({"5274": [100.0, 90.0]}, index=dates)
+    panel = {
+        "Close": close,
+        "Open": pd.DataFrame({"5274": [100.0, 100.0]}, index=dates),
+        "High": pd.DataFrame({"5274": [101.0, 101.0]}, index=dates),
+        "Low": pd.DataFrame({"5274": [99.0, 95.0]}, index=dates),
+        "Volume": pd.DataFrame({"5274": [1_000.0, 2_000.0]}, index=dates),
+    }
+    cleaned, anomalies = mask_invalid_tradable_bars(panel)
+
+    assert anomalies == [{
+        "date": dates[1].strftime("%Y-%m-%d"),
+        "ticker": "5274",
+        "open": 100.0,
+        "high": 101.0,
+        "low": 95.0,
+        "close": 90.0,
+        "action": "Open/High/Low/Volume masked; Close retained for marking",
+    }]
+    assert cleaned["Close"].loc[dates[1], "5274"] == 90.0
+    for field in ("Open", "High", "Low", "Volume"):
+        assert pd.isna(cleaned[field].loc[dates[1], "5274"])
+    assert cleaned["Open"].loc[dates[0], "5274"] == 100.0
 
 
 def test_grid_loader_rejects_a_semantic_neighborhood_typo(tmp_path):
