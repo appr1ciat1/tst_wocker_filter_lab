@@ -175,6 +175,9 @@ cython_debug/
 artifacts/*.csv
 artifacts/*.json
 artifacts/*.html
+artifacts/surge_pro_ablation_data_*/
+artifacts/surge_pro_ablation_run_*/
+artifacts/surge_pro_ablation_compare*/
 
 # ── 可稽核出處（2026-07-19 稽核）──────────────────────────────
 # 目標：外部能回答「這份數字是哪個 commit、用哪份資料算的」。
