@@ -18,6 +18,7 @@ from surge_pro_ablation_runner import (
     persist_vix,
     read_json,
     run_grid,
+    validate_trade_ledger,
     verify_bundle,
     vix_sha256,
     write_json,
@@ -31,6 +32,18 @@ def test_grid_hash_is_canonical_and_stable():
 
     assert len(grid["trials"]) == 22
     assert grid_hash == payload_sha256(reordered)
+
+
+def test_trade_ledger_quality_rejects_nonfinite_returns():
+    good = pd.DataFrame({"Return_Pct": [0.1, -0.05, 0.0]})
+    assert validate_trade_ledger(good, "good") == {
+        "trade_records": 3,
+        "finite_trade_returns": 3,
+    }
+
+    bad = pd.DataFrame({"Return_Pct": [0.1, np.nan]})
+    with pytest.raises(RuntimeError, match="1 non-finite returns"):
+        validate_trade_ledger(bad, "bad")
 
 
 def test_vix_normalization_and_hash_ignore_input_row_order():

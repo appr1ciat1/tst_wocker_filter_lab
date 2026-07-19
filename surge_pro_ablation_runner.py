@@ -589,6 +589,24 @@ def clean_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
     return coerce_jsonable(metrics)
 
 
+def validate_trade_ledger(trades: pd.DataFrame, trial_id: str) -> dict[str, int]:
+    if trades.empty:
+        return {"trade_records": 0, "finite_trade_returns": 0}
+    if "Return_Pct" not in trades:
+        raise RuntimeError(f"{trial_id} trade ledger is missing Return_Pct")
+    returns = pd.to_numeric(trades["Return_Pct"], errors="coerce")
+    finite = np.isfinite(returns.to_numpy(dtype=float))
+    invalid = int((~finite).sum())
+    if invalid:
+        raise RuntimeError(
+            f"{trial_id} trade ledger contains {invalid} non-finite returns"
+        )
+    return {
+        "trade_records": int(len(trades)),
+        "finite_trade_returns": int(finite.sum()),
+    }
+
+
 def strategy_parameters_for_trial(
     grid: dict[str, Any],
     trial: dict[str, Any],
@@ -934,6 +952,7 @@ def run_grid(
         )
         if equity.empty or "Equity" not in equity.columns:
             raise RuntimeError(f"{trial_id} produced no equity curve")
+        trade_ledger_quality = validate_trade_ledger(trades, trial_id)
         metrics = clean_metrics(
             compute_risk_metrics(equity, trades, execution.initial_capital)
         )
@@ -942,6 +961,7 @@ def run_grid(
             "group": trial["group"],
             "parameters": parameters,
             "metrics": metrics,
+            "trade_ledger_quality": trade_ledger_quality,
             "elapsed_seconds": time.perf_counter() - started,
         }
         trial_dir = output / "trials" / trial_id

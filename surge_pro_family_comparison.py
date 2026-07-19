@@ -105,6 +105,318 @@ def yearly_statistics(returns: pd.Series) -> dict[str, dict[str, float | int]]:
     return rows
 
 
+def longest_true_run(values: pd.Series) -> int:
+    mask = values.fillna(False).astype(bool)
+    if not mask.any():
+        return 0
+    groups = (~mask).cumsum()
+    return int(mask.groupby(groups).sum().max())
+
+
+def professional_diagnostics(
+    equity: pd.DataFrame,
+    trades: pd.DataFrame,
+    benchmark_close: pd.Series,
+) -> dict[str, Any]:
+    """Compute institutional-style risk, trade-edge, and benchmark diagnostics."""
+    equity_series = equity["Equity"].astype(float).sort_index()
+    if not np.isfinite(equity_series.to_numpy(dtype=float)).all():
+        raise RuntimeError("equity curve contains non-finite values")
+    returns = equity_series.pct_change().dropna()
+    if len(returns) < 3:
+        raise RuntimeError("professional diagnostics require at least three returns")
+
+    cagr = float(
+        (equity_series.iloc[-1] / equity_series.iloc[0])
+        ** (252.0 / max(len(returns), 1))
+        - 1.0
+    )
+    cumulative_peak = equity_series.cummax()
+    drawdown = equity_series / cumulative_peak - 1.0
+    ulcer_index = float(np.sqrt(np.mean(np.square(drawdown.to_numpy()))))
+    current_drawdown = float(drawdown.iloc[-1])
+    max_underwater_days = longest_true_run(drawdown < 0.0)
+
+    trough_date = drawdown.idxmin()
+    peak_date = equity_series.loc[:trough_date].idxmax()
+    peak_value = float(equity_series.loc[peak_date])
+    after_trough = equity_series.loc[trough_date:]
+    recovered_rows = after_trough[after_trough >= peak_value]
+    recovery_date = recovered_rows.index[0] if not recovered_rows.empty else None
+    index_positions = {
+        date: position for position, date in enumerate(equity_series.index)
+    }
+    recovery_days = (
+        index_positions[recovery_date] - index_positions[peak_date]
+        if recovery_date is not None else None
+    )
+
+    q05 = float(returns.quantile(0.05))
+    q95 = float(returns.quantile(0.95))
+    tail_losses = returns[returns <= q05]
+    historical_var_95 = float(-q05)
+    historical_cvar_95 = float(-tail_losses.mean())
+    tail_ratio = float(q95 / abs(q05)) if q05 < 0 else float("nan")
+    positive_sum = float(returns[returns > 0].sum())
+    negative_sum = float(abs(returns[returns < 0].sum()))
+    omega_zero = positive_sum / negative_sum if negative_sum > 0 else float("inf")
+
+    rolling_mean = returns.rolling(252).mean()
+    rolling_std = returns.rolling(252).std()
+    rolling_sharpe = (rolling_mean / rolling_std * np.sqrt(252)).dropna()
+
+    monthly = equity_series.resample("ME").last().pct_change().dropna()
+    annual = (1.0 + returns).groupby(returns.index.year).prod() - 1.0
+
+    if not trades.empty and "Return_Pct" not in trades:
+        raise RuntimeError("trade ledger is missing Return_Pct")
+    trade_returns = (
+        pd.to_numeric(trades["Return_Pct"], errors="coerce")
+        if not trades.empty else pd.Series(dtype=float)
+    )
+    invalid_trade_returns = int(
+        (~np.isfinite(trade_returns.to_numpy(dtype=float))).sum()
+    )
+    if invalid_trade_returns:
+        raise RuntimeError(
+            f"trade ledger contains {invalid_trade_returns} non-finite returns"
+        )
+    wins = trade_returns[trade_returns > 0]
+    losses = trade_returns[trade_returns <= 0]
+    win_rate = float((trade_returns > 0).mean()) if len(trade_returns) else 0.0
+    avg_win = float(wins.mean()) if len(wins) else 0.0
+    avg_loss = float(losses.mean()) if len(losses) else 0.0
+    payoff_ratio = avg_win / abs(avg_loss) if avg_loss < 0 else float("inf")
+    gross_profit = float(wins.sum())
+    gross_loss = float(abs(losses.sum()))
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
+    breakeven_win_rate = (
+        1.0 / (1.0 + payoff_ratio)
+        if math.isfinite(payoff_ratio) and payoff_ratio > 0 else 0.0
+    )
+    kelly_fraction = (
+        win_rate - (1.0 - win_rate) / payoff_ratio
+        if math.isfinite(payoff_ratio) and payoff_ratio > 0 else 0.0
+    )
+    ordered_trades = trades.copy()
+    if not ordered_trades.empty and "Exit_Date" in ordered_trades:
+        ordered_trades["_exit"] = pd.to_datetime(ordered_trades["Exit_Date"])
+        ordered_trades = ordered_trades.sort_values("_exit", kind="stable")
+    ordered_returns = (
+        pd.to_numeric(ordered_trades["Return_Pct"], errors="coerce")
+        if not ordered_trades.empty else pd.Series(dtype=float)
+    )
+    max_consecutive_wins = longest_true_run(ordered_returns > 0)
+    max_consecutive_losses = longest_true_run(ordered_returns <= 0)
+    top_10_profit_concentration = (
+        float(wins.nlargest(min(10, len(wins))).sum() / gross_profit)
+        if gross_profit > 0 else 0.0
+    )
+    holding = (
+        pd.to_numeric(trades["Days_Held"], errors="coerce")
+        if "Days_Held" in trades else pd.Series(np.nan, index=trades.index)
+    )
+    avg_holding_winners = (
+        float(holding.loc[trade_returns[trade_returns > 0].index].mean())
+        if len(wins) else 0.0
+    )
+    avg_holding_losers = (
+        float(holding.loc[trade_returns[trade_returns <= 0].index].mean())
+        if len(losses) else 0.0
+    )
+
+    benchmark_returns = benchmark_close.astype(float).sort_index().pct_change()
+    paired = pd.concat(
+        [returns.rename("strategy"), benchmark_returns.rename("benchmark")],
+        axis=1,
+        join="inner",
+    ).dropna()
+    benchmark_variance = float(paired["benchmark"].var(ddof=1))
+    beta = (
+        float(paired["strategy"].cov(paired["benchmark"]) / benchmark_variance)
+        if benchmark_variance > 0 else 0.0
+    )
+    alpha_annual = float(
+        (paired["strategy"].mean() - beta * paired["benchmark"].mean()) * 252
+    )
+    correlation = float(paired["strategy"].corr(paired["benchmark"]))
+    active = paired["strategy"] - paired["benchmark"]
+    tracking_error = float(active.std(ddof=1) * np.sqrt(252))
+    information_ratio = (
+        float(active.mean() / active.std(ddof=1) * np.sqrt(252))
+        if active.std(ddof=1) > 0 else 0.0
+    )
+    up = paired["benchmark"] > 0
+    down = paired["benchmark"] < 0
+    upside_capture = (
+        float(paired.loc[up, "strategy"].mean() / paired.loc[up, "benchmark"].mean())
+        if up.any() else 0.0
+    )
+    downside_capture = (
+        float(
+            paired.loc[down, "strategy"].mean()
+            / paired.loc[down, "benchmark"].mean()
+        )
+        if down.any() else 0.0
+    )
+
+    return {
+        "data_quality": {
+            "trade_records": int(len(trades)),
+            "finite_trade_returns": int(len(trade_returns)),
+            "invalid_trade_returns": invalid_trade_returns,
+            "finite_equity_observations": int(
+                np.isfinite(equity_series.to_numpy(dtype=float)).sum()
+            ),
+            "equity_observations": int(len(equity_series)),
+        },
+        "trade_edge": {
+            "win_rate": win_rate,
+            "average_winner": avg_win,
+            "average_loser": avg_loss,
+            "payoff_ratio": payoff_ratio,
+            "profit_factor": profit_factor,
+            "expectancy_per_trade": (
+                float(trade_returns.mean()) if len(trade_returns) else 0.0
+            ),
+            "median_trade_return": (
+                float(trade_returns.median()) if len(trade_returns) else 0.0
+            ),
+            "breakeven_win_rate": breakeven_win_rate,
+            "win_rate_edge": win_rate - breakeven_win_rate,
+            "kelly_fraction_theoretical": kelly_fraction,
+            "best_trade": float(trade_returns.max()) if len(trade_returns) else 0.0,
+            "worst_trade": float(trade_returns.min()) if len(trade_returns) else 0.0,
+            "trade_return_5pct": (
+                float(trade_returns.quantile(0.05)) if len(trade_returns) else 0.0
+            ),
+            "trade_return_95pct": (
+                float(trade_returns.quantile(0.95)) if len(trade_returns) else 0.0
+            ),
+            "max_consecutive_wins": max_consecutive_wins,
+            "max_consecutive_losses": max_consecutive_losses,
+            "top_10_profit_concentration": top_10_profit_concentration,
+            "average_holding_days_winners": avg_holding_winners,
+            "average_holding_days_losers": avg_holding_losers,
+            "trades_per_year": float(len(trade_returns) / (len(returns) / 252.0)),
+        },
+        "tail_and_drawdown": {
+            "cagr_from_first_equity": cagr,
+            "historical_var_95_daily": historical_var_95,
+            "historical_cvar_95_daily": historical_cvar_95,
+            "tail_ratio": tail_ratio,
+            "omega_ratio_zero": omega_zero,
+            "return_skew": float(returns.skew()),
+            "excess_kurtosis": float(returns.kurt()),
+            "ulcer_index": ulcer_index,
+            "current_drawdown": current_drawdown,
+            "max_underwater_trading_days": max_underwater_days,
+            "max_drawdown_peak_date": pd.Timestamp(peak_date).strftime("%Y-%m-%d"),
+            "max_drawdown_trough_date": pd.Timestamp(trough_date).strftime("%Y-%m-%d"),
+            "max_drawdown_recovery_date": (
+                pd.Timestamp(recovery_date).strftime("%Y-%m-%d")
+                if recovery_date is not None else None
+            ),
+            "max_drawdown_recovery_trading_days": recovery_days,
+            "max_drawdown_recovered": recovery_date is not None,
+        },
+        "stability": {
+            "positive_month_ratio": float((monthly > 0).mean()),
+            "positive_year_ratio": float((annual > 0).mean()),
+            "worst_month": float(monthly.min()),
+            "best_month": float(monthly.max()),
+            "worst_year": float(annual.min()),
+            "best_year": float(annual.max()),
+            "annual_return_std": float(annual.std(ddof=1)),
+            "rolling_252d_sharpe_median": (
+                float(rolling_sharpe.median()) if len(rolling_sharpe) else None
+            ),
+            "rolling_252d_sharpe_worst": (
+                float(rolling_sharpe.min()) if len(rolling_sharpe) else None
+            ),
+            "rolling_252d_sharpe_positive_ratio": (
+                float((rolling_sharpe > 0).mean()) if len(rolling_sharpe) else None
+            ),
+        },
+        "benchmark_relative": {
+            "benchmark": BENCHMARK_TICKER,
+            "beta": beta,
+            "alpha_annual_arithmetic": alpha_annual,
+            "correlation": correlation,
+            "tracking_error_annual": tracking_error,
+            "information_ratio": information_ratio,
+            "upside_capture": upside_capture,
+            "downside_capture": downside_capture,
+            "paired_observations": int(len(paired)),
+        },
+    }
+
+
+def professional_metrics_row(
+    strategy: str,
+    diagnostics: dict[str, Any],
+    core_metrics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    core = core_metrics or {}
+    trade = diagnostics["trade_edge"]
+    risk = diagnostics["tail_and_drawdown"]
+    stability = diagnostics["stability"]
+    relative = diagnostics["benchmark_relative"]
+    quality = diagnostics["data_quality"]
+    return {
+        "strategy": strategy,
+        "trade_records": quality["trade_records"],
+        "invalid_trade_returns": quality["invalid_trade_returns"],
+        "ann_return": core.get("ann_return"),
+        "ann_volatility": core.get("ann_volatility"),
+        "sharpe": core.get("sharpe"),
+        "sortino": core.get("sortino"),
+        "calmar": core.get("calmar"),
+        "max_drawdown_pct": core.get("max_drawdown_pct"),
+        "payoff_ratio": trade["payoff_ratio"],
+        "profit_factor": trade["profit_factor"],
+        "expectancy_per_trade": trade["expectancy_per_trade"],
+        "win_rate": trade["win_rate"],
+        "average_winner": trade["average_winner"],
+        "average_loser": trade["average_loser"],
+        "median_trade_return": trade["median_trade_return"],
+        "best_trade": trade["best_trade"],
+        "worst_trade": trade["worst_trade"],
+        "breakeven_win_rate": trade["breakeven_win_rate"],
+        "win_rate_edge": trade["win_rate_edge"],
+        "kelly_fraction_theoretical": trade["kelly_fraction_theoretical"],
+        "max_consecutive_losses": trade["max_consecutive_losses"],
+        "top_10_profit_concentration": trade["top_10_profit_concentration"],
+        "historical_var_95_daily": risk["historical_var_95_daily"],
+        "historical_cvar_95_daily": risk["historical_cvar_95_daily"],
+        "tail_ratio": risk["tail_ratio"],
+        "omega_ratio_zero": risk["omega_ratio_zero"],
+        "return_skew": risk["return_skew"],
+        "excess_kurtosis": risk["excess_kurtosis"],
+        "ulcer_index": risk["ulcer_index"],
+        "current_drawdown": risk["current_drawdown"],
+        "max_underwater_trading_days": risk["max_underwater_trading_days"],
+        "max_drawdown_recovery_trading_days": (
+            risk["max_drawdown_recovery_trading_days"]
+        ),
+        "positive_month_ratio": stability["positive_month_ratio"],
+        "positive_year_ratio": stability["positive_year_ratio"],
+        "annual_return_std": stability["annual_return_std"],
+        "rolling_252d_sharpe_median": stability["rolling_252d_sharpe_median"],
+        "rolling_252d_sharpe_worst": stability["rolling_252d_sharpe_worst"],
+        "rolling_252d_sharpe_positive_ratio": (
+            stability["rolling_252d_sharpe_positive_ratio"]
+        ),
+        "beta_0050": relative["beta"],
+        "alpha_annual_arithmetic_0050": relative["alpha_annual_arithmetic"],
+        "correlation_0050": relative["correlation"],
+        "tracking_error_annual_0050": relative["tracking_error_annual"],
+        "information_ratio_0050": relative["information_ratio"],
+        "upside_capture_0050": relative["upside_capture"],
+        "downside_capture_0050": relative["downside_capture"],
+    }
+
+
 def analyze_family(
     trial_results: list[dict[str, Any]],
     returns: pd.DataFrame,
@@ -162,6 +474,10 @@ def analyze_family(
         "ranking_by_sharpe": ranking,
         "metrics": {
             name: by_id[name]["metrics"]
+            for name in VARIANT_ORDER
+        },
+        "professional": {
+            name: by_id[name].get("professional", {})
             for name in VARIANT_ORDER
         },
         "pairwise": {
@@ -350,6 +666,9 @@ def run_family(
         metrics = clean_metrics(
             compute_risk_metrics(equity, trades, execution.initial_capital)
         )
+        professional = clean_metrics(
+            professional_diagnostics(equity, trades, data.market_close)
+        )
         parameters = {
             "strategy_id": name,
             "strategy_parameters": variant_parameters(name),
@@ -371,6 +690,7 @@ def run_family(
             "trial_id": name,
             "parameters": parameters,
             "metrics": metrics,
+            "professional": professional,
             "elapsed_seconds": time.perf_counter() - started,
         }
         trial_dir = output / "trials" / name
@@ -434,12 +754,28 @@ def run_family(
         float_format="%.12g",
         lineterminator="\n",
     )
+    pd.DataFrame([
+        professional_metrics_row(
+            name,
+            analysis["professional"][name],
+            analysis["metrics"][name],
+        )
+        for name in VARIANT_ORDER
+    ]).to_csv(
+        output / "professional_metrics.csv",
+        index=False,
+        float_format="%.12g",
+        lineterminator="\n",
+    )
 
     registry_trials = [
         trial_record(
             trial_id=row["trial_id"],
             parameters=row["parameters"],
-            metrics=row["metrics"],
+            metrics={
+                **row["metrics"],
+                "professional": row["professional"],
+            },
             daily_returns=daily_returns_from_equity(equities[row["trial_id"]]),
             decision="comparison_only",
         )
@@ -516,6 +852,7 @@ def run_family(
                 "strategies.csv",
                 "daily_returns.csv",
                 "yearly.csv",
+                "professional_metrics.csv",
                 "experiment_registry.sqlite",
             )
         },

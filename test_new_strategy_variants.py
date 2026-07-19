@@ -43,6 +43,49 @@ def test_optional_entry_gate_controls_first_entry():
     assert trades.iloc[0]["Exit_Date"] == dates[66].strftime("%Y-%m-%d")
 
 
+def test_zero_vix_allocation_does_not_create_a_ghost_position():
+    dates = pd.bdate_range("2025-01-01", periods=85)
+    ticker = "2330"
+    close = pd.DataFrame(100.0, index=dates, columns=[ticker])
+    open_ = close.copy()
+    high = pd.DataFrame(101.0, index=dates, columns=[ticker])
+    low = pd.DataFrame(99.0, index=dates, columns=[ticker])
+    volume = pd.DataFrame(1_000_000.0, index=dates, columns=[ticker])
+    score = pd.DataFrame(3.0, index=dates, columns=[ticker])
+    ma = pd.DataFrame(50.0, index=dates, columns=[ticker])
+    gate = pd.DataFrame(False, index=dates, columns=[ticker])
+    gate.loc[dates[65], ticker] = True
+    vix = pd.Series(30.0, index=dates)
+    bt = EventDrivenBacktester(
+        tp_sl_mode="fixed",
+        tp_pct=0.50,
+        sl_pct=0.50,
+        max_hold_days=999,
+        regime_filter=False,
+        gap_filter_atr=0,
+        initial_capital=300_000,
+        position_size=0.10,
+    )
+
+    trades, equity = bt.run(
+        score,
+        close,
+        open_,
+        high,
+        low,
+        ma,
+        top_k=1,
+        threshold=2.0,
+        vol_df=volume,
+        entry_gate_df=gate,
+        vix_series=vix,
+    )
+
+    assert trades.empty
+    assert bt.last_positions == {}
+    assert np.isfinite(equity["Equity"]).all()
+
+
 def test_rotation_confirmation_requires_same_destination():
     dates = pd.bdate_range("2026-01-01", periods=6)
     candidate = pd.DataFrame({"semiconductor": [True] * 6}, index=dates)

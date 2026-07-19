@@ -1568,6 +1568,10 @@ class EventDrivenBacktester:
                     if self.integer_shares and actual_entry > 0:
                         shares_int = np.floor(trade_amount / actual_entry)
                         trade_amount = shares_int * actual_entry
+                    # A hard risk gate can deliberately reduce allocation to
+                    # zero. Never let a zero-cost ghost consume a position slot.
+                    if not np.isfinite(trade_amount) or trade_amount <= 0:
+                        continue
                     if trade_amount < self.min_trade_amount:
                         continue
 
