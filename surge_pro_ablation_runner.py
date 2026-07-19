@@ -333,12 +333,20 @@ def validate_research_panel(panel: dict[str, pd.DataFrame], as_of: str) -> None:
         & panel["High"].notna()
         & panel["Low"].notna()
     )
-    bad_high = valid_ohlc & (
-        (panel["High"] < close) | (panel["High"] < panel["Open"])
+    upper = np.maximum(close, panel["Open"])
+    lower = np.minimum(close, panel["Open"])
+    high_close_enough = pd.DataFrame(
+        np.isclose(panel["High"], upper, rtol=1e-12, atol=1e-10),
+        index=close.index,
+        columns=close.columns,
     )
-    bad_low = valid_ohlc & (
-        (panel["Low"] > close) | (panel["Low"] > panel["Open"])
+    low_close_enough = pd.DataFrame(
+        np.isclose(panel["Low"], lower, rtol=1e-12, atol=1e-10),
+        index=close.index,
+        columns=close.columns,
     )
+    bad_high = valid_ohlc & (panel["High"] < upper) & ~high_close_enough
+    bad_low = valid_ohlc & (panel["Low"] > lower) & ~low_close_enough
     if bad_high.any().any() or bad_low.any().any():
         raise RuntimeError("OHLC price relationships are invalid")
 
