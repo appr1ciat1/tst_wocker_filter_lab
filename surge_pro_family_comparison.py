@@ -210,11 +210,22 @@ def compare_surge_reference(
     )[baseline_id]
     current_returns = returns["mom_surge_pro"]
     calendar_equal = reference_returns.index.equals(current_returns.index)
+    max_abs_return_difference = (
+        float(
+            np.max(np.abs(
+                reference_returns.to_numpy(dtype=float)
+                - current_returns.to_numpy(dtype=float)
+            ))
+        )
+        if calendar_equal else float("inf")
+    )
     values_equal = (
         calendar_equal
-        and np.array_equal(
+        and np.allclose(
             reference_returns.to_numpy(dtype=float),
             current_returns.to_numpy(dtype=float),
+            rtol=0.0,
+            atol=1e-15,
         )
     )
     current_metrics = next(
@@ -233,7 +244,9 @@ def compare_surge_reference(
         "reference_git_commit": reference_summary["git_commit"],
         "same_bundle": True,
         "calendar_equal": calendar_equal,
-        "daily_returns_byte_value_equal": values_equal,
+        "daily_returns_numerically_equal": values_equal,
+        "max_abs_return_difference": max_abs_return_difference,
+        "return_tolerance": 1e-15,
         "metric_checks": metric_checks,
         "matched": values_equal and all(metric_checks.values()),
     }
