@@ -52,6 +52,7 @@ from twstk.data.contract import (
 )
 from validation.deflated_sharpe import annualized_sharpe, compute_deflated_sharpe
 from validation.pbo_cscv import compute_pbo
+from validation.publish_gate import engine_fingerprint
 
 
 ROOT = Path(__file__).resolve().parent
@@ -960,6 +961,11 @@ def run_grid(
             "trial_id": trial_id,
             "group": trial["group"],
             "parameters": parameters,
+            # 引擎級指紋：發布閘門用它反查「這組配置有沒有被驗收過」。
+            # 必須取自引擎而非本地 parameters dict —— 本檔走插件路徑組裝，
+            # ai_report 走 argparse 路徑，兩邊 dict 形狀不同，只有對引擎
+            # 取指紋才會得到同一個鍵。
+            "engine_fingerprint": engine_fingerprint(engine),
             "metrics": metrics,
             "trade_ledger_quality": trade_ledger_quality,
             "elapsed_seconds": time.perf_counter() - started,
@@ -1131,6 +1137,7 @@ def consolidated_acceptance_record(
     decision = left_summary["analysis"]["decision"]
     registry_trials = []
     baseline_parameters = None
+    baseline_engine_fingerprint = None
     for trial in grid["trials"]:
         trial_id = trial["trial_id"]
         result = read_json(left / "trials" / trial_id / "result.json")
@@ -1151,8 +1158,13 @@ def consolidated_acceptance_record(
         ))
         if trial_id == grid["baseline_trial_id"]:
             baseline_parameters = result["parameters"]
+            baseline_engine_fingerprint = result.get("engine_fingerprint")
     if baseline_parameters is None:
         raise RuntimeError("baseline parameters missing during promotion")
+    if not baseline_engine_fingerprint:
+        raise RuntimeError(
+            "baseline engine fingerprint missing — 這批 run 由舊版 runner 產生，"
+            "發布閘門將查不到此驗收紀錄。請以現行 runner 重跑 run 階段。")
 
     baseline_id = grid["baseline_trial_id"]
     baseline_metrics = left_summary["analysis"]["baseline_metrics"]
@@ -1208,6 +1220,9 @@ def consolidated_acceptance_record(
             bundle / "grid.json",
         ],
         config=baseline_parameters,
+        # ★發布閘門用的鍵：取自基準 trial 的**引擎**，與 ai_report 端一致。
+        #   少了它，這筆驗收紀錄在發布時查不到，狀態恆為 missing。
+        config_fingerprint=baseline_engine_fingerprint,
     )
 
 

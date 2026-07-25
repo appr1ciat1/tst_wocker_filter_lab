@@ -126,3 +126,67 @@ def compute_excess_return(strategy_equity, benchmark_equity):
     excess = strat_norm - bench_norm
 
     return excess
+
+
+def capm_vs_benchmark(strategy_equity, benchmark_equity, nw_lags=10):
+    """對基準做 CAPM 迴歸，回傳 beta、年化 alpha、Newey-West t 值。
+
+    為什麼報表需要這個（2026-07-25 稽核）
+    ------------------------------------
+    報表原本只並列絕對報酬。但 2019–2026 是台股最強的動量行情之一，
+    0050 買進持有本身就有 30.5% 年化——絕對數字無法回答「這套機制到底
+    有沒有加值」。
+
+    更關鍵的是**基準要選對**：使用者已經人工挑好 116 檔股票池，那麼
+    「什麼都不做」的真實替代方案不是 0050，而是**等權買進持有這 116 檔**。
+    實測該池等權 Sharpe 1.68，高於任何一個主動策略。所以策略必須先贏過
+    「只是抱著自己選的股票」，才談得上機制有價值。
+
+    t 值用 Newey-West 修正（日策略報酬有自相關與異質變異，OLS t 值會高估）。
+    實測差異不小：SURGE PRO 對 0050 的 alpha，OLS t=2.15（顯著）但
+    NW t=1.95（不顯著）。
+
+    Returns
+    -------
+    dict 或 None（資料不足時）：{beta, ann_alpha, t_alpha, r2, n_obs}
+    """
+    import numpy as np
+    import pandas as pd
+
+    if strategy_equity is None or benchmark_equity is None:
+        return None
+    s = strategy_equity['Equity'] if isinstance(strategy_equity, pd.DataFrame) \
+        and 'Equity' in strategy_equity.columns else strategy_equity
+    s = pd.Series(s).dropna().pct_change().dropna()
+    b = pd.Series(benchmark_equity).dropna().pct_change().dropna()
+    j = pd.concat([s.rename('s'), b.rename('b')], axis=1, join='inner').dropna()
+    if len(j) < 60:
+        return None
+
+    y = j['s'].to_numpy(dtype=float)
+    X = np.column_stack([np.ones(len(j)), j['b'].to_numpy(dtype=float)])
+    coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+    resid = y - X @ coef
+    n, k = X.shape
+
+    # Newey-West HAC 共變異數
+    Xu = resid[:, None] * X
+    S = Xu.T @ Xu
+    for lag in range(1, min(nw_lags, n - 1) + 1):
+        w = 1.0 - lag / (nw_lags + 1)
+        A = Xu[lag:].T @ Xu[:-lag]
+        S += w * (A + A.T)
+    try:
+        XtXi = np.linalg.inv(X.T @ X)
+    except np.linalg.LinAlgError:
+        return None
+    var = np.diag(XtXi @ S @ XtXi * n / max(n - k, 1))
+    se = np.sqrt(np.maximum(var, 1e-30))
+
+    return {
+        'beta': float(coef[1]),
+        'ann_alpha': float(coef[0] * 252),
+        't_alpha': float(coef[0] / se[0]),
+        'r2': float(1 - resid.var() / y.var()) if y.var() > 0 else float('nan'),
+        'n_obs': int(n),
+    }

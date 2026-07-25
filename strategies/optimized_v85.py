@@ -69,7 +69,10 @@ def _build_engine(p: dict, exec_cfg: ExecConfig) -> EventDrivenBacktester:
         sell_cost=exec_cfg.sell_cost, slippage=exec_cfg.slippage,
         hybrid_tiered=False,
         regime_filter=True,
-        regime_graduated=p.get('regime_graduated', False), regime_floor=p.get('regime_floor', 0.30),
+        # ★fallback 必須與 ai_report 的 argparse 預設一致（--regime-floor 0.10）。
+        #   兩層 fallback 不同 → 同一策略在兩條路徑上組出不同引擎。今天三個
+        #   生產策略都顯式給 0.0，此值是死的；但不對齊就是留給未來的地雷。
+        regime_graduated=p.get('regime_graduated', False), regime_floor=p.get('regime_floor', 0.10),
         breadth_regime=p.get('breadth_regime', False),
         dynamic_topk=p.get('dynamic_topk', False), dynamic_gap_filter=p.get('dynamic_gap_filter', False),
         regime_sizing=p.get('regime_sizing', False),
@@ -80,7 +83,8 @@ def _build_engine(p: dict, exec_cfg: ExecConfig) -> EventDrivenBacktester:
         strong_tiers=p.get('strong_tiers'),
         corr_select_max=p.get('corr_select_max', 0.0),
         corr_select_window=p.get('corr_select_window', 60),
-        corr_select_cap=p.get('corr_select_cap', 1),
+        # 同上：與 --corr-select-cap 預設 2 對齊（corr_select_max=0 時為死參數）
+        corr_select_cap=p.get('corr_select_cap', 2),
         max_portfolio_heat=p.get('max_portfolio_heat', 1.0),
         rank_weighted=p.get('rank_weighted', False),
         gap_aware_sizing=p.get('gap_aware_sizing', False),

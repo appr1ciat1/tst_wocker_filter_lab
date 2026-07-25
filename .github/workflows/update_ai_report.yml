@@ -256,14 +256,43 @@ jobs:
       # ★必須排在 paper 頁之前：paper 頁要讀本步產生的 forward_stats.json。
       - name: Append forward signal log
         if: github.event.schedule != '0 10 1 * *' && steps.twcheck.outputs.is_trading == 'true'
-        run: python forward_record.py --append --report report_v85.html --log forward_log.csv
+        run: |
+          # ★四個策略都要追。原本只追 v8.5——而 walk-forward 顯示 v8.5 是
+          #   六個完整年度裡只贏池 1 次的那一個，用它代表全系統會嚴重誤導。
+          #   四份報表共用同一份日誌，靠 --strategy 欄區分（append 會限定
+          #   在同策略內做去重與覆寫，彼此不干擾）。
+          python forward_record.py --append --report report_v85.html       --strategy v85       --log forward_log.csv
+          python forward_record.py --append --report report_guard.html     --strategy guard     --log forward_log.csv
+          python forward_record.py --append --report report_surge.html     --strategy surge     --log forward_log.csv
+          python forward_record.py --append --report report_surge_pro.html --strategy surge_pro --log forward_log.csv
+          echo "日誌現況："; python -c "import pandas as pd; d=pd.read_csv('forward_log.csv'); print(d.groupby('strategy').size())" 
 
       # 依累積日誌重算前瞻績效 → forward_stats.json（供 paper 頁的績效對照表引用，
       # 數字不寫死在頁面，避免顯示過時統計）。失敗不阻擋當日報表發布。
       - name: Update forward stats
         if: github.event.schedule != '0 10 1 * *' && steps.twcheck.outputs.is_trading == 'true'
         continue-on-error: true
-        run: python forward_record.py --log forward_log.csv
+        run: |
+          python forward_record.py --log forward_log.csv
+          # ★continue-on-error 會讓這步靜默失敗，屆時 paper 頁的「訊號 vs 對照組」
+          #   區塊會無聲消失。主動檢查並印出，讓「跑了沒產出」看得見。
+          python - <<'PY'
+          import json, pathlib, sys
+          p = pathlib.Path("forward_stats.json")
+          if not p.exists():
+              print("⚠️ forward_stats.json 未產生"); sys.exit(0)
+          d = json.loads(p.read_text(encoding="utf-8"))
+          pb = d.get("paired_benchmark") or {}
+          if not pb:
+              print("⚠️ 缺 paired_benchmark → paper 頁不會顯示『訊號 vs 對照組』")
+          for s, rec in pb.items():
+              for b in ("池等權", "0050"):
+                  x = rec.get(b)
+                  if isinstance(x, dict) and "excess" in x:
+                      print(f"  {s} vs {b}: 超額 {x['excess']*100:+.2f}pp "
+                            f"t={x['t_paired']:+.2f} "
+                            f"{'顯著' if x['significant'] else '不顯著'}")
+          PY
 
       # Paper 頁：四策略全期權益曲線比較 + 當日 SURGE PRO 訊號（乾淨版，無 v9 內容）
       - name: Paper page (四策略比較)
@@ -360,7 +389,10 @@ jobs:
   # 每季第一週自動跑 sweep + Monte Carlo + Walk-Forward
   quarterly-health-check:
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
+    # ★2026-07-25 稽核：原本只認 event_name=='schedule'，但每日排程已移除
+    #   （改外部 cron 走 workflow_dispatch），只剩月報 cron 會觸發此條件。
+    #   加上 workflow_dispatch，讓人工可隨時補跑一次完整健檢。
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     # ★可靠性關鍵：此季度健檢（4次/年）失敗絕不能拖累「整體 run conclusion」，
     #   否則 deploy_pages 的 workflow_run.conclusion=='success' 不成立 → 每日部署被跳過。
     continue-on-error: true
@@ -394,13 +426,19 @@ jobs:
         if: steps.check.outputs.run == 'true'
         run: pip install -r requirements.txt
 
+      # ★每一步都印出產出物清單：continue-on-error 讓整個 job 可以靜默失敗，
+      #   若不主動列出檔案，「跑了但沒產出」與「根本沒跑」無法區分。
       - name: Quick Sweep
         if: steps.check.outputs.run == 'true'
-        run: python sweep.py --quick --output csv
+        run: |
+          python sweep.py --quick --output csv
+          ls -la factor_search_results.csv || echo "⚠️ sweep 未產出結果檔" 
 
       - name: Walk-Forward Validation
         if: steps.check.outputs.run == 'true'
-        run: python walk_forward.py
+        run: |
+          python walk_forward.py
+          ls -la walk_forward_results.csv || echo "⚠️ walk_forward 未產出結果檔" 
 
       - name: Monte Carlo Stress Test (Block Bootstrap)
         if: steps.check.outputs.run == 'true'
@@ -414,7 +452,8 @@ jobs:
       # sweep.py 早就會寫 artifacts/experiments.sqlite，但下方原本是
       # `git add -u artifacts`，而 `-u` 只 stage **已追蹤**的檔案；該 DB 從未
       # 被追蹤過，所以每一季產生、每一季隨 runner 銷毀。這就是證據消失的機制。
-      # 分兩層留存：純文字索引進 git（永久、~12KB/次），完整 DB 走 artifact。
+      # 分兩層留存：純文字索引進 git（永久，實測 73KB/次），完整 DB 走 artifact
+      # （實測 2.3MB/次；binary 且 git 無法 delta 壓縮，進 git 會拖垮 Pages）。
       - name: Export experiment index (git-friendly, no daily returns)
         if: steps.check.outputs.run == 'true'
         run: |
@@ -442,7 +481,13 @@ jobs:
 
           # 不含 backtest_chart.png：generate-report 已提交它；若此處也改動會與其 rebase 衝突
           # （"could not apply"），過去正是這造成季度 run 失敗、連累 deploy 被跳過。
+          # ★顯式列出每一個產出：`git add -u` 只 stage **已追蹤**的檔案，
+          #   而 WF/MC 的結果從來沒被追蹤過 → 每季產生、每季隨 runner 銷毀。
+          #   這正是「WF/MC 從未留下任何結果」的成因（2026-07-25 稽核查證）。
           git add factor_search_results.csv ablation_results.csv || true
+          git add walk_forward_results.csv walk_forward_report.html || true
+          git add monte_carlo_results.json monte_carlo.png || true
+          git add experiments_index.jsonl || true
           # ★試驗索引必須顯式 add：`git add -u` 只 stage 已追蹤檔案，
           #   新產生的證據永遠進不去（experiments.sqlite 就是這樣消失的）。
           git add experiments_index.jsonl || true

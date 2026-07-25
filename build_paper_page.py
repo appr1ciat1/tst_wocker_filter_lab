@@ -5,7 +5,7 @@ build_paper_page.py — 乾淨的「四策略」Paper / 績效比較頁產生器
 跑四個正式註冊策略（v8.5 / GUARD / SURGE / SURGE PRO）全期回測，產出：
 - 一張正確的折線圖（chart.js，log 軸）：四條權益曲線（各自起點 normalize 為 100）
 - 四策略摘要表：年化 / Sharpe / MDD / Calmar / 交易數
-- 當日最強策略（SURGE PRO）的買入訊號
+- 當日 SURGE PRO 的買入訊號
 
 完全不含 v9 Hybrid Tiered / Core-Satellite 內容。資料只下載一次（共用 MarketData）。
 """
@@ -29,18 +29,18 @@ CAPITAL = 1_000_000
 # (顯示名, 註冊名, 顏色, 一句說明)
 # 顏色採高對比、相互區隔的色相（紅/琥珀/綠/藍），四策略一目了然。
 STRATS = [
-    ("SURGE PRO", "mom_surge_pro", "#ef4444", "去風險 + 更激進分段加碼，報酬最高"),
+    ("SURGE PRO", "mom_surge_pro", "#ef4444", "去風險 + 最激進分段加碼（加碼層未通過統計驗證）"),
     ("SURGE",     "mom_surge",     "#f59e0b", "去風險 + 分段強勢加碼"),
-    ("GUARD",     "mom_guard",     "#10b981", "弱勢去風險，不加碼，最穩健"),
+    ("GUARD",     "mom_guard",     "#10b981", "弱勢去風險、不加碼；全期回撤最淺但 2022 仍輸池"),
     ("v8.5",      "momentum_v85",  "#3b82f6", "純動量基準（優化前）"),
 ]
 
 # 每個追蹤策略各產一個 paper 頁。orders 檔：SURGE PRO 走 ai_report 預設 orders_<date>.json；
 # GUARD 由 workflow 在 GUARD 那步 cp 成 orders_guard_latest.json（否則會被 SURGE PRO 覆蓋）。
 TRACKS = [
-    {"disp": "SURGE PRO", "reg": "mom_surge_pro", "color": "#ef4444", "role": "追最高報酬",
+    {"disp": "SURGE PRO", "reg": "mom_surge_pro", "color": "#ef4444", "role": "最激進加碼",
      "file": "paper_trading.html", "orders": "artifacts/orders_2*.json", "report": "report_surge_pro.html"},
-    {"disp": "GUARD", "reg": "mom_guard", "color": "#10b981", "role": "最穩健·相關性分散",
+    {"disp": "GUARD", "reg": "mom_guard", "color": "#10b981", "role": "回撤最淺·相關性分散",
      "file": "paper_trading_guard.html", "orders": "artifacts/orders_guard_*.json", "report": "report_guard.html"},
 ]
 
@@ -568,7 +568,7 @@ def build_html(results, sig_file, signals, sells, tm_stats, tm_trades, buy_round
         "<td>去風險＋不過度集中，崩盤年 OOS 最佳</td></tr>"
         "</table>"
         "<p style='color:#cbd5e1;font-size:.88rem;margin:12px 0 0;line-height:1.65'>"
-        "全期 2019–2026 數字 <b style='color:#ef4444'>SURGE PRO</b> 最強（年化／Sharpe／Calmar／PBO 皆居首）；"
+        "全期 2019–2026：SURGE 年化最高、GUARD 回撤最淺；<b>但四者 Sharpe 全低於池等權 1.68、對池 α 皆不顯著</b>（2026-07-25 稽核）。"
         "全天候平衡 <b style='color:#f59e0b'>SURGE</b> 最佳（回撤最淺 −21.5%、崩盤抗跌最好）。"
         "<b>要榨乾回測優勢且能扛崩盤 → SURGE PRO；務實怕崩盤 → SURGE。</b></p>"
     )

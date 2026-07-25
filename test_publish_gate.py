@@ -59,9 +59,44 @@ def test_expired_when_older_than_max_age(tmp_path):
 
 
 def test_non_accepted_decision_does_not_count(tmp_path):
-    """只有 accept/pass 類判定算通過；watchlist / reject 不算。"""
+    """只有 accept/pass 類判定算通過；watchlist 不算。"""
     db = _accepted_registry(tmp_path, decision="watchlist")
     assert G.evaluate(CFG, registry_path=db).status == "missing"
+
+
+@pytest.mark.parametrize("decision", ["reject", "rejected", "fail", "failed"])
+def test_validated_but_rejected_is_not_reported_as_missing(tmp_path, decision):
+    """★「驗證過但被否決」必須與「從未驗證」區分。
+
+    2026-07-25 的 SURGE PRO ablation 判定 reject（PBO 0.543、DSR 0.310）。
+    若把它顯示成 missing，讀報表的人會以為只是還沒排上驗證，
+    而不是「已經驗過、而且沒過」——後者的證據強度完全不同。
+    """
+    db = _accepted_registry(tmp_path, decision=decision)
+    r = G.evaluate(CFG, registry_path=db)
+    assert r.status == "rejected"
+    assert r.ok is False
+    assert r.pbo == pytest.approx(0.31)
+    assert "否決" in r.describe()
+
+
+def test_rejected_blocks_in_enforce_mode(tmp_path):
+    db = _accepted_registry(tmp_path, decision="reject")
+    assert G.evaluate(CFG, registry_path=db, mode="enforce").blocking is True
+
+
+def test_accept_wins_over_older_rejection(tmp_path):
+    """同一配置若先被否決、後來通過，應以通過為準。"""
+    db = _accepted_registry(tmp_path, decision="reject")
+    reg = ExperimentRegistry(db)
+    reg.record_experiment(
+        experiment_id="exp_later_ok", source="ablation",
+        strategy_version="SURGE PRO", hypothesis="retest",
+        number_of_trials=24, metrics={"sharpe": 1.3}, pbo=0.2,
+        deflated_sharpe=0.99, decision="accept", config=CFG,
+        trials=[trial_record("t1", parameters=CFG, metrics={"sharpe": 1.3})],
+        data_paths=[])
+    assert G.evaluate(CFG, registry_path=db).status == "valid"
 
 
 # ── 指紋語意：策略參數變動要失效，執行情境變動不該失效 ──────────

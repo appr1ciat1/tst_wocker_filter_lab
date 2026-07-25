@@ -175,6 +175,10 @@ cython_debug/
 artifacts/*.csv
 artifacts/*.json
 artifacts/*.html
+# ★experiment registry 是 binary（實測 22-trial 就 2.3MB），git 無法 delta 壓縮。
+#   永久保存改走純文字的 experiments_index.jsonl；完整 DB 走 upload-artifact。
+artifacts/*.sqlite
+artifacts/*.sqlite-journal
 artifacts/surge_pro_ablation_data_*/
 artifacts/surge_pro_ablation_run_*/
 artifacts/surge_pro_ablation_compare*/
@@ -185,7 +189,7 @@ artifacts/surge_pro_gap_off_*/
 # 目標：外部能回答「這份數字是哪個 commit、用哪份資料算的」。
 # 分兩級處理，因為 repo 膨脹會拖垮 Pages 部署（見下方 snapshot 註解）：
 #   · 進 git（永久、體積小）：metadata（含 git_sha + panel_sha256 + config +
-#     metrics）與 snapshot manifest。每日約 5KB。
+#     metrics）與 snapshot manifest。每日約 5KB；試驗索引每季約 73KB。
 #   · 不進 git（改用 actions/upload-artifact，90 天保留）：完整逐筆 trades
 #     （~84K/策略）與完整 equity 曲線（~53K/策略）。四策略每日約 550KB，
 #     一年 200MB，commit 進 main 會重演「repo 太大」那個坑。

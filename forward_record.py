@@ -180,7 +180,7 @@ def simulate(df, ohlc, hold_days, buy_cost, sell_cost):
     return pd.DataFrame(trades)
 
 
-LOG_COLS = ["signal_date", "ticker", "score", "ref_price", "rank", "tp", "sl"]
+LOG_COLS = ["signal_date", "ticker", "score", "ref_price", "rank", "tp", "sl", "strategy"]
 
 
 def load_log(path):
@@ -188,37 +188,58 @@ def load_log(path):
         return pd.DataFrame(columns=LOG_COLS)
     df = pd.read_csv(path)
     df["signal_date"] = pd.to_datetime(df["signal_date"])
+    # 向後相容：2026-07-25 之前的日誌沒有 strategy 欄，全部視為 v85
+    # （當時 CI 只跑 `--report report_v85.html`）。不可丟棄這些歷史列——
+    # 它們是目前唯一的樣本外證據。
+    if "strategy" not in df.columns:
+        df["strategy"] = "v85"
+    df["strategy"] = df["strategy"].fillna("v85").astype(str)
     return df
 
 
 def save_log(df, path):
     out = df[LOG_COLS].copy()
     out["signal_date"] = pd.to_datetime(out["signal_date"]).dt.strftime("%Y-%m-%d")
-    out.sort_values(["signal_date", "rank"]).to_csv(path, index=False, encoding="utf-8-sig")
+    if "strategy" not in out.columns:
+        out["strategy"] = "v85"
+    out.sort_values(["signal_date", "strategy", "rank"]).to_csv(
+        path, index=False, encoding="utf-8-sig")
 
 
-def append_today(report_file, log_path, as_of):
-    """CI 每日呼叫：把當日報表的建議追加進日誌（不需 git 歷史，配合淺 checkout）。"""
+def append_today(report_file, log_path, as_of, strategy="v85"):
+    """CI 每日呼叫：把當日報表的建議追加進日誌（不需 git 歷史，配合淺 checkout）。
+
+    strategy：來源報表對應的策略代號（v85 / guard / surge / surge_pro）。
+    ★所有比對與覆寫都必須**限定在同一個 strategy 內**——否則四個策略混在
+      同一份日誌時，策略 B 的訊號會被拿去和策略 A 的比，導致誤判為
+      「休市重發」而被丟棄，或覆寫掉別的策略當日紀錄。
+    """
     if not os.path.exists(report_file):
         print(f"找不到 {report_file}"); return 1
     rows = parse_report(open(report_file, encoding="utf-8", errors="replace").read())
     if not rows:
-        print("當日無建議買進訊號，不追加"); return 0
+        print(f"[{strategy}] 當日無建議買進訊號，不追加"); return 0
     new = pd.DataFrame(rows)
     new["signal_date"] = pd.Timestamp(as_of)
+    new["strategy"] = strategy
     log = load_log(log_path)
     if not log.empty:
-        last_day = log["signal_date"].max()
-        prev = log[log["signal_date"] == last_day]
-        same = (sorted(zip(prev["ticker"].astype(str), prev["ref_price"])) ==
-                sorted(zip(new["ticker"].astype(str), new["ref_price"])))
-        # 休市日重發前日訊號 → 不追加（資料契約已擋大部分，這是第二道保險）
-        if same and pd.Timestamp(as_of) != last_day:
-            print(f"⚠️ 當日訊號與 {last_day.date()} 完全相同（疑似休市重發）→ 不追加")
-            return 0
-        log = log[log["signal_date"] != pd.Timestamp(as_of)]   # 同日重跑則覆蓋
+        mine = log[log["strategy"] == strategy]            # ★只看自己這一策略
+        if not mine.empty:
+            last_day = mine["signal_date"].max()
+            prev = mine[mine["signal_date"] == last_day]
+            same = (sorted(zip(prev["ticker"].astype(str), prev["ref_price"])) ==
+                    sorted(zip(new["ticker"].astype(str), new["ref_price"])))
+            # 休市日重發前日訊號 → 不追加（資料契約已擋大部分，這是第二道保險）
+            if same and pd.Timestamp(as_of) != last_day:
+                print(f"⚠️ [{strategy}] 當日訊號與 {last_day.date()} 完全相同"
+                      f"（疑似休市重發）→ 不追加")
+                return 0
+        # 同日重跑則覆蓋——但只覆蓋自己這一策略
+        log = log[~((log["signal_date"] == pd.Timestamp(as_of)) &
+                    (log["strategy"] == strategy))]
     save_log(pd.concat([log, new], ignore_index=True), log_path)
-    print(f"✅ 已追加 {len(new)} 筆（{as_of}）→ {log_path}")
+    print(f"✅ [{strategy}] 已追加 {len(new)} 筆（{as_of}）→ {log_path}")
     return 0
 
 
@@ -226,6 +247,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", help="git repo 路徑（--backfill 用）")
     ap.add_argument("--report", default="report_v85.html")
+    ap.add_argument("--strategy", default="v85",
+                    help="來源報表的策略代號（v85/guard/surge/surge_pro）；"
+                         "四策略共用同一份日誌，靠此欄區分")
     ap.add_argument("--since", default="2026-04-04", help="策略/股池定案日")
     ap.add_argument("--hold-days", type=int, default=20)
     ap.add_argument("--buy-cost", type=float, default=0.001425)
@@ -243,7 +267,8 @@ def main():
 
     if args.append:
         return append_today(args.report, args.log,
-                            args.as_of or pd.Timestamp.today().strftime("%Y-%m-%d"))
+                            args.as_of or pd.Timestamp.today().strftime("%Y-%m-%d"),
+                            strategy=args.strategy)
 
     print("=" * 74)
     print(f"真實前瞻紀錄評估（日誌：{args.log}）")
@@ -289,17 +314,39 @@ def main():
         print(f"  [{label}] 筆數 {len(d):<4} 勝率 {(d['net']>0).mean():.1%}  "
               f"平均淨報酬 {d['net'].mean():+.2%}  中位 {d['net'].median():+.2%}")
 
-    # 基準對照：同期間 0050，用來分辨是策略還是大盤
+    # ── 逐筆配對基準（2026-07-25 稽核 B3b，取代原本的「全期總漲幅」比較）──
+    # 舊做法拿「0050 整段漲幅」比「逐筆訊號的平均報酬」——兩個量不可比：
+    # 訊號是散在不同時點、各持有 N 天的短窗，0050 是連續持有整段。
+    # 新做法：每筆訊號都跟**同一個進出場窗**的基準比，再對配對差額做 t 檢定
+    # （以訊號日為單位，同日多筆先取平均，避免自由度灌水）。
+    # 實測差異極大——配對法下 v85 對池是 +5.31pp、t=3.44（顯著），
+    # 舊做法完全看不出來。且基準加入**116 池等權**：稽核已證實池等權
+    # Sharpe 1.68 高於任何策略，「贏過 0050」不構成價值主張。
+    paired_stats = {}
     try:
-        import yfinance as yf
-        b = yf.download(["0050.TW"], start=str(tr["entry_date"].min()),
-                        end="2026-07-19", progress=False, auto_adjust=True)
-        bc = b[("Close", "0050.TW")].dropna()
-        if len(bc) > 1:
-            print(f"\n  📊 同期間 0050：{bc.iloc[-1]/bc.iloc[0]-1:+.2%}"
-                  f"（{bc.index[0].date()} → {bc.index[-1].date()}）← 用來分辨策略 vs 大盤")
+        from forward_benchmark import format_report, paired_compare
+        done2 = tr[tr["closed"]].copy()
+        smap = sig.copy()
+        smap["signal_date"] = pd.to_datetime(smap["signal_date"]).dt.date
+        done2 = done2.merge(smap[["signal_date", "ticker", "strategy"]]
+                            .drop_duplicates(["signal_date", "ticker"]),
+                            on=["signal_date", "ticker"], how="left")
+        done2["strategy"] = done2["strategy"].fillna("v85")
+        # ★池＝**完整 116 檔股票池**，不是「曾被訊號選中的那些」。
+        #   誤用後者會把基準換成「等權持有動量贏家」——那是強得多的對照組，
+        #   會讓策略看起來顯著落後（實測 -2.51pp/t=-3.41），是假結論。
+        from ai_report import EXTENDED_TICKERS
+        span_start = str(pd.Timestamp(tr["entry_date"].min()) - pd.Timedelta(days=10))[:10]
+        pool_px = fetch_ohlc(EXTENDED_TICKERS, span_start, "2026-12-31")
+        print(f"  池基準：{len(pool_px)}/{len(EXTENDED_TICKERS)} 檔取得行情")
+        benches = {"池等權": pool_px} if len(pool_px) >= 50 else {}
+        mkt = fetch_ohlc(["0050"], span_start, "2026-12-31")
+        if "0050" in mkt:
+            benches["0050"] = mkt["0050"]
+        paired_stats = paired_compare(done2, benches)
+        print("\n" + format_report(paired_stats))
     except Exception as e:
-        print(f"  （基準抓取失敗：{e}）")
+        print(f"  （配對基準計算失敗：{e}）")
     print(f"\n  出場原因: {dict(tr['reason'].value_counts())}")
     print(f"  平均持有天數: {tr['days'].mean():.1f}")
 
@@ -401,6 +448,10 @@ def main():
                           freq_tier=("少" if f <= lo_cut else ("多" if f >= med_cut else "中")),
                           persistent=is_p, verdict=verdict, tone=tone))
     stats["today"] = dict(date=str(pd.Timestamp(last_day).date()), picks=picks)
+    # ★逐筆配對基準（B5）：把 B3 的計算存進 JSON，讓 paper 頁每天自動顯示
+    #   「訊號 vs 池的配對 t」，不必有人手動去算。
+    #   失敗時存空 dict——widget 會整區略過，不讓基準抓不到拖垮整條管線。
+    stats["paired_benchmark"] = paired_stats
     with open("forward_stats.json", "w", encoding="utf-8") as f:
         json.dump(stats, f, ensure_ascii=False, indent=1)
     print(f"📁 forward_stats.json（供 paper 頁引用，as_of={stats['as_of']}）")

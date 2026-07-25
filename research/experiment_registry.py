@@ -468,7 +468,9 @@ def export_index(db_path: str | os.PathLike[str] = DEFAULT_REGISTRY_PATH,
       直接 commit 會重演「repo 太大拖垮 Pages」那個坑。
 
     所以分兩層：
-      · 本函式輸出的 JSONL（**不含日報酬**，約 5KB/次）→ 永久進 git。
+      · 本函式輸出的 JSONL（**不含日報酬**）→ 永久進 git。實測 22-trial
+        的 ablation 產生 73KB（每季一次 ≈ 292KB/年），相對 2.3MB 的
+        sqlite 小 32 倍。
         足以回答「當初試了哪 N 組、參數為何、結果為何、PBO/DSR 多少」，
         這正是 PBO 宣稱要能被外部檢驗的部分。
       · 完整 .sqlite（含日報酬，可重算 PBO）→ 走 actions/upload-artifact。

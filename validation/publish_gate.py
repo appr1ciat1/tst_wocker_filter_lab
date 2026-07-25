@@ -58,7 +58,7 @@ EXCLUDED_KEYS = frozenset({
 
 @dataclass
 class GateResult:
-    status: str                       # valid | expired | missing
+    status: str                       # valid | expired | rejected | missing
     fingerprint: str
     strategy: str | None = None
     experiment_id: str | None = None
@@ -95,7 +95,8 @@ class GateResult:
         }
 
     def describe(self) -> str:
-        icon = {"valid": "✅", "expired": "🟠", "missing": "🔴"}.get(self.status, "❔")
+        icon = {"valid": "✅", "expired": "🟠",
+                "rejected": "⛔", "missing": "🔴"}.get(self.status, "❔")
         head = f"{icon} 發布閘門[{self.mode}]：{self.status}  fingerprint={self.fingerprint[:12]}"
         if self.status == "valid":
             return (f"{head}  ← 驗收於 {self.validated_at}"
@@ -103,7 +104,70 @@ class GateResult:
         if self.status == "expired":
             return (f"{head}  ← 最近一筆驗收 {self.validated_at}"
                     f" 已逾 {self.max_age_days} 天（{self.age_days:.0f} 天前）")
+        if self.status == "rejected":
+            return (f"{head}  ← 此配置**經統計驗證後被否決**"
+                    f"（{self.validated_at}，PBO={self.pbo}, DSR={self.deflated_sharpe}）")
         return f"{head}  ← registry 中查無此配置的驗收紀錄"
+
+
+_ENGINE_EXCLUDED = frozenset({
+    # 執行情境而非策略定義：分數股下報酬對資金規模不變
+    "initial_capital",
+    # run() 之後才寫上的**執行結果**（不是參數）。它們沒有底線前綴，
+    # 若不排除，「跑過的引擎」與「剛建好的引擎」會算出不同指紋。
+    "last_cash", "last_positions",
+})
+
+
+def engine_fingerprint(engine: Any) -> str:
+    """指紋取自**引擎實際持有的參數**，與「是哪一層組裝的」無關。
+
+    為什麼不用呼叫端的 config dict（2026-07-19 稽核）
+    ------------------------------------------------
+    同一個策略有兩條組裝路徑：
+      · ai_report.py 的 argparse（93 鍵）        → 發布報表走這條
+      · strategies/*_PARAMS + _build_engine      → paper 頁與 ablation 走這條
+    兩邊 dict 形狀天差地遠，對同一個策略會算出不同指紋 —— 於是
+    ablation 驗收過的紀錄，發布閘門永遠查不到，狀態恆為 missing。
+
+    改成對「引擎建構完成後的參數狀態」取指紋，兩層組裝出同一個策略就必然
+    得到同一個指紋。這同時讓 L3 等價性變成**可構造驗證**的性質：
+    兩條路徑指紋相同 ⇔ 它們產生同一個回測。
+
+    只取公開屬性；底線開頭的是執行期狀態（日誌、快取），不屬於策略定義。
+    """
+    state: dict[str, Any] = {}
+    for key, val in vars(engine).items():
+        if key.startswith("_") or key in _ENGINE_EXCLUDED:
+            continue
+        norm = _normalize(val)
+        if norm is not _SKIP:
+            state[key] = norm
+    blob = json.dumps(state, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+_SKIP = object()
+
+
+def _normalize(val: Any) -> Any:
+    """把值正規化成型別穩定的可雜湊表示。
+
+    ★數值一律轉 float：兩層組裝會讓同一個旋鈕一邊是 int 一邊是 float
+    （實例：corr_filter 在 CLI 路徑是 0.0、插件路徑是 0），值相同卻
+    序列化不同，會產生假的「配置已變更」。
+    bool 必須先判——Python 的 bool 是 int 的子類。
+    DataFrame / Series 等資料不入指紋：那是輸入，不是策略定義。
+    """
+    if isinstance(val, bool) or val is None or isinstance(val, str):
+        return val
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, (list, tuple)):
+        return [_normalize(x) for x in val]
+    if isinstance(val, (set, frozenset)):
+        return sorted(map(str, val))
+    return _SKIP
 
 
 def config_fingerprint(config: dict[str, Any]) -> str:
@@ -131,8 +195,10 @@ def _age_days(iso: str | None) -> float | None:
 
 
 def evaluate(
-    config: dict[str, Any],
+    config: dict[str, Any] | None = None,
     *,
+    engine: Any = None,
+    fingerprint: str | None = None,
     strategy: str | None = None,
     registry_path: str | os.PathLike[str] = "artifacts/experiments.sqlite",
     max_age_days: int = DEFAULT_MAX_AGE_DAYS,
@@ -140,13 +206,25 @@ def evaluate(
 ) -> GateResult:
     """查 registry 判定這組配置的驗收狀態。**永不 raise**——查不到就回 missing。
 
+    指紋來源優先序：fingerprint > engine > config。
+    ★優先用 engine：那是跨組裝路徑的正規形式。用呼叫端的 config dict 會讓
+      ai_report（argparse 93 鍵）與 ablation（插件 dict）算出不同指紋，
+      於是驗收過的紀錄永遠查不到。
+
     mode 未指定時讀環境變數 TWSTK_PUBLISH_GATE（observe|enforce），預設 observe。
     """
     mode = (mode or os.environ.get("TWSTK_PUBLISH_GATE") or "observe").lower()
     if mode not in ("observe", "enforce"):
         mode = "observe"
 
-    fp = config_fingerprint(config)
+    if fingerprint is not None:
+        fp = fingerprint
+    elif engine is not None:
+        fp = engine_fingerprint(engine)
+    elif config is not None:
+        fp = config_fingerprint(config)
+    else:
+        raise ValueError("需提供 fingerprint、engine 或 config 其中之一")
     res = GateResult(status="missing", fingerprint=fp, strategy=strategy,
                      max_age_days=max_age_days, mode=mode)
 
@@ -174,6 +252,27 @@ def evaluate(
                 """,
                 (fp,),
             ).fetchone()
+            if row is None:
+                # ★「驗證過但被否決」與「從未驗證」是兩件事。前者證據更強，
+                #   不該被含混成 missing —— 那會讓人以為只是還沒排上驗證。
+                rejected = conn.execute(
+                    """
+                    SELECT experiment_id, created_at, pbo, deflated_sharpe, decision
+                    FROM experiments
+                    WHERE config_fingerprint = ?
+                      AND decision IN ('reject', 'rejected', 'fail', 'failed')
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (fp,),
+                ).fetchone()
+                if rejected is not None:
+                    res.status = "rejected"
+                    res.experiment_id = rejected["experiment_id"]
+                    res.validated_at = rejected["created_at"]
+                    res.pbo = rejected["pbo"]
+                    res.deflated_sharpe = rejected["deflated_sharpe"]
+                    res.age_days = _age_days(rejected["created_at"])
+                    return res
     except Exception as e:                       # registry 壞掉不該擋住發布
         res.notes.append(f"讀取 registry 失敗：{e}")
         return res

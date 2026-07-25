@@ -301,10 +301,37 @@ def build_manifest(panel, as_of, *, provider: str, auto_adjust: bool,
     }
 
 
-def freeze_snapshot(panel, out_dir, manifest: dict) -> str:
+AUX_SERIES_FILE = "aux_series.csv"
+
+
+def _aux_file_hash(path: str) -> str:
+    """對 aux CSV 的**檔案內容**取 hash。
+
+    ★刻意雜湊檔案而非記憶體物件：CSV 往返會改變浮點的字串表示，
+    對記憶體物件取 hash 會在「剛寫完就讀」時就對不上。
+    要保護的是「載入時拿到的東西是否與凍結時相同」，那就直接對檔案取 hash。
     """
-    凍結一份快照到 out_dir/：panel.pkl + manifest.json。
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def freeze_snapshot(panel, out_dir, manifest: dict, aux_series: dict | None = None) -> str:
+    """
+    凍結一份快照到 out_dir/：panel.pkl + manifest.json（+ aux_series.csv）。
     回傳 out_dir 路徑。四策略之後以 load_snapshot(out_dir) 共讀同一份資料。
+
+    aux_series（2026-07-25 稽核 B4）
+    -------------------------------
+    panel 之外、但**同樣會改變回測結果**的外部序列，最重要的是 **VIX**。
+    稽核查證：即使設了 TWSTK_SNAPSHOT，引擎仍會在 run() 內自行下載 VIX，
+    ai_report 也會另外網路重抓 0050——兩者都繞過快照。實測 VIX 用凍結
+    vs 即時，v8.5 年化差 5pp。
+
+    ⇒ 只凍結 panel 不足以宣稱「當日 run 可重現」。這些序列必須一起凍結、
+      一起 hash，出處才完整。
     """
     os.makedirs(out_dir, exist_ok=True)
     panel_dict = _as_dict(panel)
@@ -317,9 +344,49 @@ def freeze_snapshot(panel, out_dir, manifest: dict) -> str:
         )
     with open(os.path.join(out_dir, "panel.pkl"), "wb") as f:
         pickle.dump({k: panel_dict.get(k) for k in FIELDS}, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    if aux_series:
+        df = pd.DataFrame({k: pd.Series(v) for k, v in aux_series.items()}).sort_index()
+        df.index.name = "date"
+        aux_path = os.path.join(out_dir, AUX_SERIES_FILE)
+        # 固定換行符：否則同一份資料在 Windows/Linux 寫出的檔案 hash 不同
+        df.to_csv(aux_path, encoding="utf-8", lineterminator="\n")
+        manifest = {**(manifest or {}),
+                    "aux_series": sorted(aux_series),
+                    "aux_sha256": _aux_file_hash(aux_path)}
+
     with open(os.path.join(out_dir, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
     return out_dir
+
+
+def load_aux_series(path, name=None, *, verify_manifest=True):
+    """從快照讀外部序列（如 VIX）。path 可為快照目錄或其中的 panel.pkl。
+
+    找不到就回 None（舊快照沒有這個檔），呼叫端據此退回即時下載並**出聲**。
+    """
+    d = path if os.path.isdir(path) else os.path.dirname(os.path.abspath(path))
+    f = os.path.join(d, AUX_SERIES_FILE)
+    if not os.path.exists(f):
+        return None
+    df = pd.read_csv(f, index_col=0, parse_dates=True)
+    if verify_manifest:
+        mp = os.path.join(d, "manifest.json")
+        if os.path.exists(mp):
+            try:
+                with open(mp, encoding="utf-8") as mf:
+                    expected = json.load(mf).get("aux_sha256")
+            except Exception:
+                expected = None
+            if expected:
+                actual = _aux_file_hash(f)
+                if actual != expected:
+                    raise SnapshotIntegrityError(
+                        f"aux_series 與 manifest 不一致：expected={expected}, "
+                        f"actual={actual}。拒絕以可能被竄改的資料回測。")
+    if name is None:
+        return df
+    return df[name].dropna() if name in df.columns else None
 
 
 class SnapshotTickerError(RuntimeError):
