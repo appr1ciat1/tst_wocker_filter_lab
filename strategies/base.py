@@ -62,7 +62,10 @@ class ExecConfig:
     initial_capital: float = 1_000_000
     buy_cost: float = 0.001425
     sell_cost: float = 0.004425
-    slippage: float = 0.0
+    # ★單邊滑價。2026-07 稽核前為 0.0，且沒有任何變體覆寫它 →
+    #   所有已發布績效都是零滑價。台股中小型股合理區間 15~30bps。
+    #   必須與 ai_report.py 的 --slippage 預設一致（見 test_param_layers_agree）。
+    slippage: float = 0.002
     top_k: int = 7
     threshold: float = 2.0
 

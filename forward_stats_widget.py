@@ -128,7 +128,58 @@ def render(stats: dict | None = None, path: str = STATS_FILE,
         f"樣本數少的分組請謹慎解讀；此非長期預期。"
         f"</div>"
     )
-    return f"{_CSS}<div class='fw-wrap'>{warn}{today_tbl}{tbl}{note}</div>"
+    return (f"{_CSS}<div class='fw-wrap'>{warn}{_paired_block(stats)}"
+            f"{today_tbl}{tbl}{note}</div>")
+
+
+def _paired_block(stats: dict) -> str:
+    """逐筆配對基準區塊（2026-07-25 稽核 B5）。
+
+    ★這是整個 paper 頁最重要的一列數字：它回答「訊號到底有沒有贏過
+      『什麼都不做、等權抱著自己選的 116 檔』」。
+      稽核已證實池等權 Sharpe 1.68 高於任何策略，所以「贏過 0050」
+      不構成價值主張——池才是對照組。
+
+    缺資料時回空字串（顯示層 fail-soft）。
+    """
+    pb = stats.get("paired_benchmark") or {}
+    if not pb:
+        return ""
+    rows = ""
+    for strat in sorted(pb):
+        rec = pb[strat]
+        for bname in ("池等權", "0050"):
+            b = rec.get(bname)
+            if not isinstance(b, dict) or "excess" not in b:
+                continue
+            sig_ok = b.get("significant")
+            color = "#16a34a" if (sig_ok and b["excess"] > 0) else (
+                "#dc2626" if (sig_ok and b["excess"] < 0) else "#6b7280")
+            verdict = ("✅ 顯著勝出" if sig_ok and b["excess"] > 0 else
+                       "❌ 顯著落後" if sig_ok and b["excess"] < 0 else "— 不顯著")
+            rows += (
+                f"<tr><td>{strat}</td><td>{bname}</td>"
+                f"<td style='text-align:right'>{b['strategy_mean']*100:+.2f}%</td>"
+                f"<td style='text-align:right'>{b['bench_mean']*100:+.2f}%</td>"
+                f"<td style='text-align:right;color:{color}'><b>{b['excess']*100:+.2f}pp</b></td>"
+                f"<td style='text-align:right'>{b['t_paired']:+.2f}</td>"
+                f"<td style='color:{color}'>{verdict}</td>"
+                f"<td style='text-align:right'>{b['n_signal_days']}</td></tr>")
+    if not rows:
+        return ""
+    return (
+        "<div class='fw-warn' style='border-left-color:#6366f1'>"
+        "<h4>🎯 訊號 vs 對照組（逐筆配對，進出場窗完全對齊）</h4>"
+        "<table class='fw-tbl'><thead><tr>"
+        "<th>策略</th><th>對照組</th><th style='text-align:right'>訊號</th>"
+        "<th style='text-align:right'>對照</th><th style='text-align:right'>超額</th>"
+        "<th style='text-align:right'>配對t</th><th>判定</th>"
+        "<th style='text-align:right'>訊號日</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
+        "<div class='fw-note'>「什麼都不做」的替代方案＝<b>等權抱著這 116 檔</b>，"
+        "不是 0050。每筆訊號都跟<b>同一個進出場窗</b>的對照組比，再對配對差額做 t 檢定"
+        "（以訊號日為單位，同日多筆先取平均，避免自由度灌水）。"
+        "|t|&gt;1.96 才算 5% 顯著。</div></div>")
 
 
 def persistent_from_rounds(rounds, min_hits: int = 2) -> list:

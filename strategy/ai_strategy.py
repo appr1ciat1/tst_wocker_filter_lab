@@ -21,6 +21,11 @@ import warnings
 
 warnings.filterwarnings('ignore')
 
+# 代號 ↔ symbol ↔ 市場別的唯一真相在 twstk.data.symbols；
+# 這裡只 re-export，保留既有 `from strategy.ai_strategy import strip_market_suffix`
+# 的相容性，避免同一份剝除邏輯出現第二個實作。
+from twstk.data.symbols import strip_market_suffix  # noqa: E402,F401
+
 
 def fetch_panel_data(tickers, days=800, start_date=None, end_date=None):
     """
@@ -81,10 +86,10 @@ def fetch_panel_data(tickers, days=800, start_date=None, end_date=None):
         else:
             return pd.DataFrame(index=raw_df.index)
         extracted = extracted.copy()
-        extracted.columns = [
-            str(c).replace('.TW', '').replace('.TWO', '')
-            for c in extracted.columns
-        ]
+        # ★用正則一次剝掉市場後綴，不可用連續 replace：
+        #   '5274.TWO'.replace('.TW','') → '5274O'（'.TW' 會先吃掉 '.TWO' 的前綴），
+        #   造成上櫃股以假代碼 '5274O' 流入下游，且共享快照會整檔遺失。
+        extracted.columns = [strip_market_suffix(c) for c in extracted.columns]
         if extracted.columns.duplicated().any():
             extracted = extracted.T.groupby(level=0).first().T
         return extracted
@@ -126,6 +131,10 @@ def fetch_panel_data(tickers, days=800, start_date=None, end_date=None):
     df = all_dfs[0] if len(all_dfs) == 1 else pd.concat(all_dfs, axis=1)
 
     # 上櫃股票常用 .TWO 後綴；先抓 .TW，缺資料者再 fallback。
+    # 註：這裡刻意**不**改用 twstk.data.symbols.probe_tw_then_two——那個 helper 的
+    # 契約是 dict{ticker: value}，而本函式是「多批 DataFrame 橫向 concat」，
+    # 形狀不同，硬套只會多一層轉換。語意（先 .TW、缺的再 .TWO、以抓不抓得到
+    # 為準）與 helper 一致；後綴剝除統一走 strip_market_suffix。
     close_probe = _extract_field(df, 'Close')
     missing_tickers = [
         ticker for ticker in tickers

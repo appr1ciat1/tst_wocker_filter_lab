@@ -158,15 +158,12 @@ def get_current_bars(tickers):
                 return None
             return float(series.iloc[-1])
 
-        tw_symbols = {t: f"{t}.TW" for t in tickers}
-        bars.update(read_bars(download(list(tw_symbols.values())), tw_symbols))
-        missing = [t for t in tickers if t not in bars]
-        if missing:
-            two_symbols = {t: f"{t}.TWO" for t in missing}
-            bars.update(read_bars(download(list(two_symbols.values())), two_symbols))
-        still_missing = [t for t in tickers if t not in bars]
-        if still_missing:
-            print(f"   ⚠️ 無法取得報價: {', '.join(still_missing)}")
+        from twstk.data.symbols import probe_tw_then_two
+        bars.update(probe_tw_then_two(
+            tickers,
+            lambda m: read_bars(download(list(m.values())), m),
+            warn_label="無法取得報價",
+        ))
     except Exception as e:
         print(f"   ⚠️ 價格下載失敗: {e}")
     return bars
@@ -851,23 +848,17 @@ def _download_historical_bars(tickers: list, start_date: str, end_date: str) -> 
             parsed[ticker] = by_day
         return parsed
 
-    bars = {}
-    tw_map = {t: f"{t}.TW" for t in tickers}
-    tw_df = yf.download(
-        list(tw_map.values()), start=start_dt.isoformat(), end=end_dt.isoformat(),
-        progress=False, auto_adjust=False, threads=True,
-    )
-    bars.update(parse_bars(tw_df, tw_map))
+    from twstk.data.symbols import probe_tw_then_two
 
-    missing = [t for t in tickers if t not in bars]
-    if missing:
-        two_map = {t: f"{t}.TWO" for t in missing}
-        two_df = yf.download(
-            list(two_map.values()), start=start_dt.isoformat(), end=end_dt.isoformat(),
+    def _fetch(symbol_map):
+        df = yf.download(
+            list(symbol_map.values()),
+            start=start_dt.isoformat(), end=end_dt.isoformat(),
             progress=False, auto_adjust=False, threads=True,
         )
-        bars.update(parse_bars(two_df, two_map))
-    return bars
+        return parse_bars(df, symbol_map)
+
+    return probe_tw_then_two(tickers, _fetch, warn_label="歷史 bar 無法取得")
 
 
 def _seed_replay_equity_warmup(data: dict, start_date: str,

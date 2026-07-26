@@ -58,6 +58,7 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+.pytest*/
 cover/
 
 # Translations
@@ -174,6 +175,25 @@ cython_debug/
 artifacts/*.csv
 artifacts/*.json
 artifacts/*.html
+# ★experiment registry 是 binary（實測 22-trial 就 2.3MB），git 無法 delta 壓縮。
+#   永久保存改走純文字的 experiments_index.jsonl；完整 DB 走 upload-artifact。
+artifacts/*.sqlite
+artifacts/*.sqlite-journal
+artifacts/surge_pro_ablation_data_*/
+artifacts/surge_pro_ablation_run_*/
+artifacts/surge_pro_ablation_compare*/
+artifacts/surge_pro_family_*/
+artifacts/surge_pro_gap_off_*/
+
+# ── 可稽核出處（2026-07-19 稽核）──────────────────────────────
+# 目標：外部能回答「這份數字是哪個 commit、用哪份資料算的」。
+# 分兩級處理，因為 repo 膨脹會拖垮 Pages 部署（見下方 snapshot 註解）：
+#   · 進 git（永久、體積小）：metadata（含 git_sha + panel_sha256 + config +
+#     metrics）與 snapshot manifest。每日約 5KB；試驗索引每季約 73KB。
+#   · 不進 git（改用 actions/upload-artifact，90 天保留）：完整逐筆 trades
+#     （~84K/策略）與完整 equity 曲線（~53K/策略）。四策略每日約 550KB，
+#     一年 200MB，commit 進 main 會重演「repo 太大」那個坑。
+!artifacts/metadata_*.json
 stock_report.html
 paper_trading.html
 paper_equity.json
@@ -187,8 +207,14 @@ artifacts/sbl_7yr_cache.pkl
 artifacts/sbl_balances_cache.pkl
 artifacts/margin_cache.pkl
 
-# Preflight 每日共享快照：只存在於 CI runner，絕不 commit 進 main（避免 repo 膨脹拖垮 Pages 部署）
-artifacts/snapshot_*/
+# Preflight 每日共享快照：panel.pkl 約 8.2MB，只存在於 CI runner，
+# 絕不 commit 進 main（避免 repo 膨脹拖垮 Pages 部署）。
+# ★但 manifest.json（372 bytes，含 panel_sha256）要進 git——
+#   有 hash 就能驗證「重抓的資料是否與當初同一份」，不必存 8MB 的 pickle。
+# ★排除的是「目錄內容」而非「目錄本身」——git 不會進入被排除的目錄，
+#   寫成 `artifacts/snapshot_*/` 的話下面那條負向規則會完全失效。
+artifacts/snapshot_*/*
+!artifacts/snapshot_*/manifest.json
 
 # Filter Lab publishes these generated snapshots on every trading day.
 !stock_report.html

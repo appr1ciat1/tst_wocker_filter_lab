@@ -25,7 +25,7 @@ import pandas as pd
 from pool_audit import audit_pool
 from validation.capacity import capacity_gate
 from validation.pbo_cscv import compute_pbo
-from validation.deflated_sharpe import compute_deflated_sharpe
+from validation.deflated_sharpe import annualized_sharpe, compute_deflated_sharpe
 
 
 @dataclass
@@ -55,7 +55,21 @@ def statistical_gate(returns_by_trial: pd.DataFrame | dict | None = None,
         if not np.isnan(pbo.pbo):
             ok = ok and (pbo.pbo <= max_pbo)
     if single_returns is not None:
-        dsr = compute_deflated_sharpe(single_returns, n_trials=n_trials)
+        trial_sharpes = None
+        if returns_by_trial is not None:
+            if isinstance(returns_by_trial, pd.DataFrame):
+                trial_series = (
+                    returns_by_trial[column] for column in returns_by_trial.columns
+                )
+            else:
+                trial_series = returns_by_trial.values()
+            trial_sharpes = [annualized_sharpe(series) for series in trial_series]
+            n_trials = len(trial_sharpes)
+        dsr = compute_deflated_sharpe(
+            single_returns,
+            n_trials=n_trials,
+            trial_sharpes=trial_sharpes,
+        )
         detail["dsr"] = round(dsr.deflated_sharpe, 3)
         detail["dsr_prob"] = round(dsr.probability, 3)
         ok = ok and (dsr.probability >= min_dsr_prob)

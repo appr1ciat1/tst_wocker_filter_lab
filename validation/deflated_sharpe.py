@@ -36,6 +36,8 @@ class DeflatedSharpeResult:
     n_trials: int
     skew: float
     kurtosis: float
+    trial_sharpe_mean: float
+    trial_sharpe_std: float
 
 
 def _as_clean_returns(returns: Iterable[float] | pd.Series | np.ndarray) -> np.ndarray:
@@ -101,6 +103,8 @@ def compute_deflated_sharpe(
     n_trials: int = 1,
     benchmark_sharpe: float = 0.0,
     annualization: int = TRADING_DAYS_PER_YEAR,
+    trial_sharpes: Iterable[float] | np.ndarray | None = None,
+    trial_mean_sharpe: float | None = None,
 ) -> DeflatedSharpeResult:
     """Compute the Deflated Sharpe Ratio probability for a return series.
 
@@ -108,6 +112,35 @@ def compute_deflated_sharpe(
     normal CDF of that z-score and is usually the friendlier gate metric.
     """
     arr = _as_clean_returns(returns)
+    trial_sr = (
+        _as_clean_returns(trial_sharpes)
+        if trial_sharpes is not None else np.array([], dtype=float)
+    )
+    if trial_sharpes is not None:
+        if len(trial_sr) == 0:
+            raise ValueError("trial_sharpes must contain at least one finite Sharpe")
+        if n_trials not in (1, len(trial_sr)):
+            raise ValueError(
+                f"n_trials={n_trials} does not match {len(trial_sr)} trial Sharpes"
+            )
+        n_trials = len(trial_sr)
+    else:
+        n_trials = max(1, int(n_trials))
+        if n_trials > 1:
+            raise ValueError(
+                "formal DSR with n_trials > 1 requires trial_sharpes; "
+                "the selected series sampling error is not cross-trial dispersion"
+            )
+
+    trial_sr_mean = (
+        float(trial_mean_sharpe)
+        if trial_mean_sharpe is not None
+        else (float(np.mean(trial_sr)) if len(trial_sr) else float(benchmark_sharpe))
+    )
+    trial_sr_std = (
+        float(np.std(trial_sr, ddof=1))
+        if len(trial_sr) > 1 else 0.0
+    )
     n_obs = len(arr)
     if n_obs < 3:
         return DeflatedSharpeResult(
@@ -118,9 +151,11 @@ def compute_deflated_sharpe(
             deflated_sharpe=float("-inf"),
             probability=0.0,
             n_observations=n_obs,
-            n_trials=max(1, int(n_trials)),
+            n_trials=n_trials,
             skew=0.0,
             kurtosis=3.0,
+            trial_sharpe_mean=trial_sr_mean,
+            trial_sharpe_std=trial_sr_std,
         )
 
     sr = annualized_sharpe(arr, annualization=annualization)
@@ -132,7 +167,12 @@ def compute_deflated_sharpe(
     variance_term = max(variance_term, 1e-12)
     sharpe_std_period = math.sqrt(variance_term / max(n_obs - 1, 1))
     sharpe_std = sharpe_std_period * math.sqrt(annualization)
-    hurdle = expected_max_sharpe(sharpe_std, max(1, int(n_trials)), benchmark_sharpe)
+    # Multiple-testing hurdle 用「所有 trial 的 Sharpe 橫斷面離散度」；
+    # selected series 的 sampling SE 只用在下方 PSR/DSR 分母。兩者不可混用。
+    hurdle = (
+        expected_max_sharpe(trial_sr_std, n_trials, trial_sr_mean)
+        if n_trials > 1 else float(benchmark_sharpe)
+    )
 
     if sharpe_std <= 0 or not math.isfinite(sharpe_std):
         z_score = float("inf") if sr > hurdle else float("-inf")
@@ -148,9 +188,11 @@ def compute_deflated_sharpe(
         deflated_sharpe=z_score,
         probability=probability,
         n_observations=n_obs,
-        n_trials=max(1, int(n_trials)),
+        n_trials=n_trials,
         skew=skew,
         kurtosis=kurt,
+        trial_sharpe_mean=trial_sr_mean,
+        trial_sharpe_std=trial_sr_std,
     )
 
 
@@ -169,6 +211,10 @@ def main() -> int:
     parser.add_argument("--equity", required=True, help="CSV with an Equity column")
     parser.add_argument("--trials", type=int, default=1, help="Number of tested configurations")
     parser.add_argument("--benchmark-sharpe", type=float, default=0.0)
+    parser.add_argument(
+        "--trial-sharpes", nargs="*", type=float,
+        help="All tested configurations' annualized Sharpes (required when --trials > 1)",
+    )
     args = parser.parse_args()
 
     returns = daily_returns_from_csv(args.equity)
@@ -176,6 +222,7 @@ def main() -> int:
         returns,
         n_trials=args.trials,
         benchmark_sharpe=args.benchmark_sharpe,
+        trial_sharpes=args.trial_sharpes,
     )
     print(f"Sharpe: {result.sharpe:.4f}")
     print(f"Expected max Sharpe hurdle: {result.expected_max_sharpe:.4f}")

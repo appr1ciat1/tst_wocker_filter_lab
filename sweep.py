@@ -26,7 +26,7 @@ from research.experiment_registry import (
     series_from_daily_returns,
     trial_record,
 )
-from validation.deflated_sharpe import compute_deflated_sharpe
+from validation.deflated_sharpe import annualized_sharpe, compute_deflated_sharpe
 from validation.pbo_cscv import compute_pbo
 
 
@@ -158,7 +158,12 @@ def record_sweep_experiment(args, configs, results, trial_records, decision):
     dsr_z = None
     best_series = series_from_daily_returns(best_daily_returns)
     if len(best_series) >= 3:
-        dsr = compute_deflated_sharpe(best_series, n_trials=len(configs))
+        trial_sharpes = [annualized_sharpe(series) for series in returns_by_trial.values()]
+        dsr = compute_deflated_sharpe(
+            best_series,
+            n_trials=len(trial_sharpes),
+            trial_sharpes=trial_sharpes,
+        )
         dsr_probability = dsr.probability
         dsr_z = dsr.deflated_sharpe
 

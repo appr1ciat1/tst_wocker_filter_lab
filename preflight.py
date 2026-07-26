@@ -114,10 +114,37 @@ def main():
     out_dir = args.out or os.path.join("artifacts", f"snapshot_{as_of.strftime('%Y%m%d')}")
     manifest = build_manifest(panel, as_of, provider="yfinance",
                               auto_adjust=True, contract=result)
-    freeze_snapshot(panel, out_dir, manifest)
+
+    # ★一併凍結 VIX（2026-07-25 稽核 B4）
+    #   引擎在 regime_sizing / macro_regime 開啟時會在 run() 內自行下載 VIX，
+    #   完全繞過快照。實測凍結 vs 即時讓 v8.5 年化差 5pp——只凍結 panel
+    #   不足以宣稱「當日 run 可重現」。
+    #   ⚠️ 抓不到不 fail-closed：VIX 只影響部分策略的曝險調節，
+    #      不像股價缺失會讓訊號整個失真。但必須出聲。
+    aux = {}
+    try:
+        import yfinance as yf
+        v = yf.download("^VIX", start=close.index[0], end=close.index[-1],
+                        progress=False)
+        s = None
+        if "Close" in v.columns:
+            s = v["Close"].squeeze()
+        elif ("Close", "^VIX") in v.columns:
+            s = v[("Close", "^VIX")].squeeze()
+        if s is not None and len(s.dropna()) > 100:
+            aux["VIX"] = s.dropna()
+            print(f"   🌍 VIX 已凍結（{len(aux['VIX'])} 天）")
+        else:
+            print("   ⚠️ VIX 資料過少，未凍結（策略將退回即時下載）")
+    except Exception as e:
+        print(f"   ⚠️ VIX 下載失敗，未凍結（策略將退回即時下載）：{e}")
+
+    freeze_snapshot(panel, out_dir, manifest, aux_series=aux or None)
     snap_pkl = os.path.join(out_dir, "panel.pkl")
     print(f"\n🧊 已凍結共享快照：{out_dir}")
     print(f"   hash={manifest['panel_sha256'][:16]}…  n_tickers={manifest['n_tickers']}  last={manifest['last_session']}")
+    if aux:
+        print(f"   aux={sorted(aux)}（與 panel 同級 hash，載入時會驗證完整性）")
 
     export_env("TWSTK_SNAPSHOT", snap_pkl)
     print(f"   → 已設 TWSTK_SNAPSHOT={snap_pkl}（四策略將共讀此份）")

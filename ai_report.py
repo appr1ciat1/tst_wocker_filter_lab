@@ -614,6 +614,104 @@ def generate_report(trades_df, equity_df, total_score, close_df, config,
         except Exception:
             pass
 
+    # === 對「自己選的股票池」的真實加值（2026-07-25 稽核）===
+    # 使用者已人工挑好 116 檔池，所以「什麼都不做」的真實替代方案不是 0050，
+    # 而是**等權買進持有這 116 檔**。實測該池等權 Sharpe 1.68，高於任何一個
+    # 主動策略——策略必須先贏過「只是抱著自己選的股票」，機制才談得上有價值。
+    # 同時報 beta 與 Newey-West t：日策略報酬有自相關，OLS t 會高估顯著性。
+    pool_stats_html = ""
+    if ew_equity is not None and len(ew_equity) > 20:
+        try:
+            from strategy.benchmark import capm_vs_benchmark
+            from strategy.risk_metrics import compute_risk_metrics as _crm3
+            ew_eq = pd.DataFrame({'Equity': ew_equity * initial_capital},
+                                 index=ew_equity.index)
+            ew_m = _crm3(ew_eq, pd.DataFrame(), initial_capital)
+            cap = capm_vs_benchmark(equity_df, ew_equity)
+
+            # ★逐年對池勝負（2026-07-25 稽核 A 重寫）
+            #   全期 MDD 較淺容易被讀成「機制會保護資本」，但 walk-forward
+            #   顯示那是**路徑效應**：2022 是樣本內唯一的空頭年，池只跌 8.6%，
+            #   而四個策略跌 18.7~22.8%——去風險在真正需要它的那年反而放大虧損。
+            #   把逐年勝負攤在報表上，這個事實就不可能再被忽略。
+            year_rows, n_win, n_year = "", 0, 0
+            try:
+                s_ret = equity_df['Equity'].pct_change().dropna()
+                p_ret = pd.Series(ew_equity).dropna().pct_change().dropna()
+                jr = pd.concat([s_ret.rename('s'), p_ret.rename('p')],
+                               axis=1, join='inner').dropna()
+                for yr, sub in jr.groupby(jr.index.year):
+                    if len(sub) < 40:
+                        continue
+                    sy = float((1 + sub['s']).prod() - 1)
+                    py = float((1 + sub['p']).prod() - 1)
+                    n_year += 1
+                    win = sy > py
+                    n_win += win
+                    bear = py < 0                       # 池為負＝該年是逆風
+                    color = "#00ff00" if win else "#ff4444"
+                    tag = ("　🐻 逆風年" if bear else "")
+                    year_rows += (
+                        f"<tr><td>{yr}{tag}</td>"
+                        f"<td style='text-align:right'>{py*100:+.1f}%</td>"
+                        f"<td style='text-align:right'>{sy*100:+.1f}%</td>"
+                        f"<td style='text-align:right;color:{color}'>"
+                        f"{(sy-py)*100:+.1f}pp</td></tr>")
+            except Exception as _ye:
+                print(f"   ⚠️ 逐年對照計算失敗（略過）：{_ye}")
+
+            if cap is not None:
+                sig = abs(cap['t_alpha']) > 1.96
+                a_color = "#00ff00" if (cap['ann_alpha'] > 0 and sig) else "#ff4444"
+                verdict = ("機制加值在統計上成立" if sig and cap['ann_alpha'] > 0
+                           else "<b>機制未提供統計上可辨識的加值</b>")
+                sharpe_gap = m['sharpe'] - ew_m['sharpe']
+                pool_stats_html = f"""
+    <h2>🎯 對「自己選的 116 檔池」的真實加值</h2>
+    <p style="color:#8e8e93;font-size:.9rem;margin:0 0 10px">
+      「什麼都不做」的替代方案＝等權買進持有這 116 檔，不是 0050。
+      策略必須先贏過它。α 的 t 值採 Newey-West 修正（|t|&gt;1.96 才算 5% 顯著）。</p>
+    <div class="stats">
+        <div class="stat-card benchmark">
+            <div class="label">池等權 年化 / Sharpe</div>
+            <div class="value">{ew_m['ann_return']*100:+.1f}% / {ew_m['sharpe']:.2f}</div>
+        </div>
+        <div class="stat-card benchmark">
+            <div class="label">池等權 最大回撤</div>
+            <div class="value">{ew_m['max_drawdown_pct']*100:.1f}%</div>
+        </div>
+        <div class="stat-card benchmark">
+            <div class="label">策略 Sharpe − 池 Sharpe</div>
+            <div class="value" style="color:{'#00ff00' if sharpe_gap > 0 else '#ff4444'}">{sharpe_gap:+.2f}</div>
+        </div>
+        <div class="stat-card benchmark">
+            <div class="label">對池的 β（曝險比例）</div>
+            <div class="value">{cap['beta']:.2f}</div>
+        </div>
+        <div class="stat-card" style="border-left-color:{a_color}">
+            <div class="label">對池的年化 α</div>
+            <div class="value" style="color:{a_color}">{cap['ann_alpha']*100:+.1f}%</div>
+        </div>
+        <div class="stat-card" style="border-left-color:{a_color}">
+            <div class="label">α 的 Newey-West t</div>
+            <div class="value" style="color:{a_color}">{cap['t_alpha']:.2f}</div>
+        </div>
+    </div>
+    <p style="color:#8e8e93;font-size:.88rem;margin:6px 0 0">判定：{verdict}
+      （n={cap['n_obs']} 個交易日）。β&lt;1 代表策略只承擔部分池曝險，
+      故絕對報酬不可直接與池相比，須看 α 與 Sharpe。</p>
+    <h3 style="margin:18px 0 6px">📆 逐年對池勝負（{n_win}/{n_year} 年勝出）</h3>
+    <p style="color:#8e8e93;font-size:.88rem;margin:0 0 8px">
+      全期最大回撤較淺，不等於「機制會在空頭保護你」——那可能只是路徑效應。
+      逐年攤開才看得到<b>逆風年（🐻＝池為負報酬的年度）</b>的真實表現。</p>
+    <table>
+        <thead><tr><th>年度</th><th style="text-align:right">池等權</th>
+        <th style="text-align:right">本策略</th><th style="text-align:right">差額</th></tr></thead>
+        <tbody>{year_rows}</tbody>
+    </table>"""
+        except Exception as _e:
+            print(f"   ⚠️ 池對照計算失敗（略過）：{_e}")
+
     # === 00981A Benchmark 比較 ===
     benchmark2_stats_html = ""
     if benchmark2_equity is not None and len(benchmark2_equity) > 20:
@@ -634,18 +732,26 @@ def generate_report(trades_df, equity_df, total_score, close_df, config,
                 b_ret = (float(bench2_sub.iloc[-1]) / float(bench2_sub.iloc[0]) - 1) * 100
                 excess2 = s_ret - b_ret
                 e2_color = "#00ff00" if excess2 > 0 else "#ff4444"
+                # ★00981A 上市於 2025-05，樣本遠短於策略的 2019~。把 14 個月
+                #   年化成三位數放在 7.5 年策略旁邊極易誤讀，故每一格都標出
+                #   實際期間，不能只在「超額」那一格寫「共存期」。
+                b2_start = pd.Timestamp(benchmark2_equity.index[0]).date()
+                b2_end = pd.Timestamp(benchmark2_equity.index[-1]).date()
+                b2_years = max((b2_end - b2_start).days / 365.25, 1e-9)
+                b2_span = f"{b2_start} ~ {b2_end}，{b2_years:.1f} 年"
+                b2_warn = ("（樣本 &lt; 2 年，年化僅供參考）" if b2_years < 2 else "")
                 benchmark2_stats_html = f"""
     <div class="stats">
         <div class="stat-card benchmark">
-            <div class="label">00981A 年化報酬</div>
+            <div class="label">00981A 年化報酬<br><small>{b2_span}{b2_warn}</small></div>
             <div class="value">{bm2_ann:+.1f}%</div>
         </div>
         <div class="stat-card benchmark">
-            <div class="label">00981A 最大回撤</div>
+            <div class="label">00981A 最大回撤<br><small>{b2_span}</small></div>
             <div class="value">{bm2_mdd:.1f}%</div>
         </div>
         <div class="stat-card benchmark">
-            <div class="label">00981A Sharpe</div>
+            <div class="label">00981A Sharpe<br><small>{b2_span}</small></div>
             <div class="value">{bm2_sharpe:.2f}</div>
         </div>
         <div class="stat-card" style="border-left-color:{e2_color}">
@@ -962,7 +1068,76 @@ def generate_report(trades_df, equity_df, total_score, close_df, config,
 
     # === 產出 HTML ===
     report_date = latest_date.strftime('%Y-%m-%d')
-    cost_desc = f"買 {config.get('buy_cost', 0.001425)*100:.3f}% + 賣 {config.get('sell_cost', 0.004425)*100:.3f}%"
+
+    # ★出處（必須在 HTML 之前算好）：讓「這份數字是哪個 commit、用哪份資料算的」
+    #   直接印在頁面上，而不是只躺在 artifacts/metadata_*.json 裡。
+    try:
+        git_sha = subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD'], text=True
+        ).strip()
+    except Exception:
+        git_sha = None
+    snapshot_path = os.environ.get('TWSTK_SNAPSHOT')
+    panel_sha256 = None
+    snapshot_manifest = None
+    if snapshot_path:
+        try:
+            mdir = os.path.dirname(snapshot_path) or '.'
+            snapshot_manifest = os.path.join(mdir, 'manifest.json')
+            with open(snapshot_manifest, 'r', encoding='utf-8') as mf:
+                panel_sha256 = json.load(mf).get('panel_sha256')
+        except Exception as e:
+            print(f"   ⚠️ 無法讀取 snapshot manifest（出處將標為未知）：{e}")
+            snapshot_manifest = None
+    # ── 發布出處閘門（預設觀察模式）──
+    # 每日發布只有一個 run，算不出 PBO/DSR（那需要一組 trial），所以這裡不做
+    # 統計重算，只查「這組參數有沒有被正式驗收過、過期了沒」。
+    # observe：記錄但不阻擋。等 ablation 產生第一批紀錄、觀察一段時間知道
+    # 實際通過率後，再由 TWSTK_PUBLISH_GATE=enforce 切成阻擋，邏輯不需改。
+    gate_dict = None
+    gate_html = ""
+    try:
+        from validation import publish_gate
+        gate = publish_gate.evaluate(
+            config, fingerprint=config.get('engine_fingerprint'),
+            strategy=config.get('artifact_label'))
+        gate_dict = gate.to_dict()
+        print(f"   {gate.describe()}")
+        if gate.blocking:
+            raise SystemExit(
+                f"❌ 發布閘門[enforce] 擋下：{gate.status}。"
+                f"請先讓此配置通過驗收（跑 ablation_study.py 並記入 registry），"
+                f"或暫時設 TWSTK_PUBLISH_GATE=observe。"
+            )
+        _txt = {
+            "valid": f"✅ 已驗收（{gate.validated_at[:10] if gate.validated_at else '—'}"
+                     f"，PBO={gate.pbo}, DSR={gate.deflated_sharpe}）",
+            "expired": f"🟠 驗收已過期（最近一筆 {gate.validated_at[:10] if gate.validated_at else '—'}）",
+            "missing": "🔴 <b>此配置尚無通過驗收的試驗紀錄</b>（PBO／Deflated Sharpe 未驗證）",
+        }.get(gate.status, gate.status)
+        gate_html = f" | 驗收狀態：{_txt}"
+    except SystemExit:
+        raise
+    except Exception as e:                        # 閘門本身故障不該擋住發布
+        print(f"   ⚠️ 發布閘門評估失敗（略過）：{e}")
+
+    provenance_desc = (
+        f"commit <code>{(git_sha or '未知')[:12]}</code> | "
+        + (f"資料快照 <code>{panel_sha256[:16]}…</code>（四策略共讀同一份）"
+           if panel_sha256 else
+           "資料＝即時下載（<b>未經共享快照凍結，無法逐位元重現</b>）")
+        + f" | 產生於 {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        + gate_html
+    )
+
+    # ★滑價必須顯示在報表上：零滑價是很強的假設，讀者有權在頁面上看到。
+    _slip_bps = config.get('slippage', 0.0) * 1e4
+    cost_desc = (
+        f"買 {config.get('buy_cost', 0.001425)*100:.3f}%"
+        f" + 賣 {config.get('sell_cost', 0.004425)*100:.3f}%"
+        f" + 滑價 {_slip_bps:.0f}bps"
+        + ("（★零滑價名目回測）" if _slip_bps <= 0 else "")
+    )
     mode_html = f"ATR×{config.get('tp_atr_mult', 3)}/{config.get('sl_atr_mult', 1.5)}" \
         if tp_sl_mode == 'atr' else f"停利 +{tp_pct*100:.0f}% 停損 -{sl_pct*100:.0f}%"
     if config.get('trailing_stop', False):
@@ -1350,6 +1525,7 @@ def generate_report(trades_df, equity_df, total_score, close_df, config,
 
     <h2>📈 資金曲線 vs Benchmark</h2>
 {benchmark_stats_html}
+{pool_stats_html}
 {benchmark2_stats_html}
     <img src="backtest_chart.png" alt="AI Quantitative Backtest Equity Curve with Benchmark">
 
@@ -1408,6 +1584,8 @@ def generate_report(trades_df, equity_df, total_score, close_df, config,
         <br><br>
         <b>{'v9 Hybrid Tiered' if hybrid_tiered else 'v8.5'} 方法論：</b>Entry = t+1 open | TP/SL = {mode_html} | 選股 = Top-{top_k} cross-sectional rank |{' + Portfolio Vol Target + Core-Satellite overlay |' if hybrid_tiered else ' '}
         成本 = {cost_desc} | 回測期 = {m['years']:.1f} 年 | 因子 = Mom(20d)×3 + Trend(60MA)×1
+        <br><br>
+        <b>本頁出處：</b>{provenance_desc}
     </div>
 
 </div>
@@ -1443,31 +1621,43 @@ def generate_report(trades_df, equity_df, total_score, close_df, config,
     os.makedirs('artifacts', exist_ok=True)
     date_str = latest_date.strftime('%Y%m%d')
 
-    if not trades_df.empty:
-        trades_df.to_csv(f'artifacts/trades_{date_str}.csv', index=False)
+    # ★策略標籤：四個策略原本寫同一組檔名，後跑的會蓋掉先跑的，
+    #   於是每天的稽核軌跡只留下最後一個（SURGE PRO）。加上標籤後
+    #   四份 trades/equity/signals/metadata 各自留存。
+    #   orders_<date>.json **刻意不加標籤**——paper 追蹤靠
+    #   `artifacts/orders_2*.json` 抓最後一個，那個「後蓋前」是設計而非 bug。
+    label = str(config.get('artifact_label') or '').strip()
+    sfx = f'_{label}' if label else ''
 
-    equity_df.to_csv(f'artifacts/equity_{date_str}.csv')
+    if not trades_df.empty:
+        trades_df.to_csv(f'artifacts/trades_{date_str}{sfx}.csv', index=False)
+
+    equity_df.to_csv(f'artifacts/equity_{date_str}{sfx}.csv')
 
     # 信號快照
     today_signals = total_score.loc[[latest_date]].T
     today_signals.columns = ['Score']
     today_signals = today_signals.dropna().sort_values('Score', ascending=False)
-    today_signals.to_csv(f'artifacts/signals_{date_str}.csv')
+    today_signals.to_csv(f'artifacts/signals_{date_str}{sfx}.csv')
 
     with open(f'artifacts/orders_{date_str}.json', 'w', encoding='utf-8') as f:
         json.dump({'orders': orders}, f, indent=2, ensure_ascii=False)
 
-    try:
-        git_sha = subprocess.check_output(
-            ['git', 'rev-parse', 'HEAD'], text=True
-        ).strip()
-    except Exception:
-        git_sha = None
+    # git_sha / panel_sha256 已於 HTML 產出前算好（見上方 provenance_desc），
+    # 這裡直接沿用同一組值，確保頁面與 metadata 說的是同一件事。
     metadata = {
         'created_at': datetime.now().isoformat(),
         'strategy_version': strategy_version,
         'git_sha': git_sha,
         'report_date': latest_date.strftime('%Y-%m-%d'),
+        'artifact_label': label or None,
+        'publish_gate': gate_dict,
+        'data_provenance': {
+            'snapshot': snapshot_path,
+            'manifest': snapshot_manifest,
+            'panel_sha256': panel_sha256,
+            'mode': 'shared_snapshot' if panel_sha256 else 'live_download',
+        },
         'config': config,
         'metrics': {
             'total_return': metrics.get('total_return'),
@@ -1480,13 +1670,13 @@ def generate_report(trades_df, equity_df, total_score, close_df, config,
             'total_trades': metrics.get('total_trades'),
         },
         'artifacts': {
-            'equity': f'artifacts/equity_{date_str}.csv',
-            'trades': f'artifacts/trades_{date_str}.csv' if not trades_df.empty else None,
-            'signals': f'artifacts/signals_{date_str}.csv',
+            'equity': f'artifacts/equity_{date_str}{sfx}.csv',
+            'trades': f'artifacts/trades_{date_str}{sfx}.csv' if not trades_df.empty else None,
+            'signals': f'artifacts/signals_{date_str}{sfx}.csv',
             'orders': f'artifacts/orders_{date_str}.json',
         },
     }
-    with open(f'artifacts/metadata_{date_str}.json', 'w', encoding='utf-8') as f:
+    with open(f'artifacts/metadata_{date_str}{sfx}.json', 'w', encoding='utf-8') as f:
         json.dump(metadata, f, indent=2, ensure_ascii=False, default=str)
 
     print(f"   ✅ 報表已生成：stock_report.html")
@@ -1586,8 +1776,17 @@ def parse_args():
         help='獲利保護觸發門檻 (預設: 0=停用, 0.03=+3%%後 SL 移至成本價)'
     )
     parser.add_argument(
-        '--slippage', type=float, default=0.0,
-        help='滑價模型 (預設: 0=與 V3 sweep 一致; 0.001=10bps)'
+        '--artifact-label', type=str, default='',
+        help='artifacts 檔名後綴（如 v85/guard/surge/surge_pro）。'
+             '四策略原本寫同一組檔名互相覆蓋，每天只留下最後一個的稽核軌跡；'
+             '加標籤後各自留存。orders_<date>.json 不受影響（paper 靠它抓最後一個）'
+    )
+    parser.add_argument(
+        '--slippage', type=float, default=0.002,
+        help='單邊滑價 (預設: 0.002=20bps)。★2026-07 稽核前預設為 0，'
+             '導致所有已發布績效都是零滑價的名目回測。'
+             '台股中小型股合理區間 15~30bps，取 20bps 為預設；'
+             '要重現舊數字請顯式傳 --slippage 0'
     )
     parser.add_argument(
         '--vol-parity', action='store_true',
@@ -1912,103 +2111,14 @@ def parse_args():
     return parser.parse_args()
 
 
-def main():
-    args = parse_args()
+def build_backtester_from_args(args):
+    """由 argparse args 建構回測引擎。
 
-    if args.v85_optimized:
-        args.hybrid_tiered = False
-        args.position_size = 0.115
-        args.breadth_regime = True
-
-    # 決定股池
-    if args.static_pool or args.tickers:
-        tickers = args.tickers if args.tickers else DEFAULT_TICKERS
-        use_dynamic = False
-    else:
-        tickers = EXTENDED_TICKERS
-        use_dynamic = True
-
-    mode_str = f"動態 Universe (Top-{args.universe_size})" if use_dynamic else f"靜態 ({len(tickers)} 檔)"
-    tp_sl_str = f"ATR×{args.tp_atr}/{args.sl_atr}" if args.tp_sl_mode == 'atr' \
-        else f"+{args.tp*100:.0f}%/-{args.sl*100:.0f}%"
-    cost_str = f"買 {args.buy_cost*100:.3f}% 賣 {args.sell_cost*100:.3f}%"
-
-    trailing_str = f" +Trailing({args.trailing_atr}×ATR)" if args.trailing else ""
-
-    print("=" * 60)
-    tiered_str = f"ON ({V3_PRODUCTION_LABEL})" if args.hybrid_tiered else "OFF (v8.5)"
-    print(f"🎯 AI 台股量化交易系統 — Hybrid Tiered: {tiered_str}")
-    print("=" * 60)
-    print(f"   股池: {mode_str}")
-    print(f"   TP/SL: {tp_sl_str}{trailing_str}  Top-K: {args.top_k}  持倉上限: {args.hold_days} 天")
-    print(f"   成本: {cost_str}")
-    if args.start_date:
-        print(f"   回測期間: {args.start_date} → {args.end_date or '今天'}")
-    else:
-        print(f"   回測天數: {args.days}")
-    print("=" * 60)
-
-    # Phase 1: 資料下載
-    close_df, open_df, high_df, low_df, vol_df = fetch_panel_data(
-        tickers, days=args.days,
-        start_date=args.start_date, end_date=args.end_date,
-    )
-
-    # Phase 2: 動態 Universe 或靜態池
-    if use_dynamic:
-        universe_mask = build_liquid_universe(close_df, vol_df, top_n=args.universe_size)
-    else:
-        universe_mask = None
-
-    # Phase 2.5: 籌碼時序數據（僅用於因子加權；報表顯示使用輕量 API）
-    inst_flow_df = None
-    inst_flow_by_window = None
-    if args.inst_flow > 0:
-        try:
-            inst_flow_df, inst_ratio_df = build_inst_flow_df(
-                list(close_df.columns), close_df, verbose=True)
-        except Exception as e:
-            print(f"   ⚠️ 籌碼數據抓取失敗，跳過: {e}")
-            inst_flow_df = None
-    if args.inst_hold_exit:
-        try:
-            inst_flow_by_window, inst_ratio_df = build_inst_flow_windows(
-                list(close_df.columns), close_df, windows=(5, 10, 20), verbose=True)
-        except Exception as e:
-            print(f"   ⚠️ 法人出場籌碼資料抓取失敗，改用原出場: {e}")
-            inst_flow_by_window = None
-
-    # Phase 3.5: 提前下載 0050 用於 regime filter + 殘差動量
-    market_close = None
-    if args.regime_filter or args.residual_momentum:
-        print("\n📊 下載大盤指數 (0050) 用於 regime filter...")
-        bench_raw = fetch_benchmark(
-            '0050', days=args.days,
-            start_date=args.start_date, end_date=args.end_date,
-        )
-        if len(bench_raw) > 0:
-            market_close = bench_raw * bench_raw.iloc[0]
-
-    # Phase 3: 特徵工程
-    total_score, ma_60, atr_df, short_ma = engineer_features(
-        close_df, vol_df, universe_mask,
-        ma_period=args.ma_period,
-        multi_ma=args.multi_ma,
-        ml_weights=args.ml_weights,
-        inst_flow_weight=args.inst_flow,
-        inst_flow_df=inst_flow_df,
-        residual_momentum=args.residual_momentum,
-        trend_quality=args.trend_quality,
-        liq_stability=args.liq_stability,
-        liq_mode=args.liq_mode,
-        market_close=market_close,
-        rsi_weight=args.rsi_weight,
-        breakout_weight=args.breakout_weight,
-        value_weight=args.value_weight,
-        rev_momentum_weight=args.rev_momentum_weight,
-    )
-
-    # Phase 4: 事件驅動回測
+    ★這段原本內嵌在 main() 裡，導致任何想「取得同一個引擎」的程式（測試、
+    ablation、等價性檢查）只能複製那 68 個 kwargs —— 複製本身就成了另一份
+    真相。2026-07-19 稽核時我複製漏了 27 個，憑空生出 7 個假差異。
+    抽成函式後，CLI 路徑只有這一個入口。
+    """
     if args.hybrid_tiered and build_v3_production_backtester is not None:
         backtester = build_v3_production_backtester(args)
     else:
@@ -2084,10 +2194,157 @@ def main():
             buy_cost=args.buy_cost,
             sell_cost=args.sell_cost,
         )
+    return backtester
+
+
+def main():
+    args = parse_args()
+
+    if args.v85_optimized:
+        args.hybrid_tiered = False
+        args.position_size = 0.115
+        args.breadth_regime = True
+
+    # 決定股池
+    if args.static_pool or args.tickers:
+        tickers = args.tickers if args.tickers else DEFAULT_TICKERS
+        use_dynamic = False
+    else:
+        tickers = EXTENDED_TICKERS
+        use_dynamic = True
+
+    mode_str = f"動態 Universe (Top-{args.universe_size})" if use_dynamic else f"靜態 ({len(tickers)} 檔)"
+    tp_sl_str = f"ATR×{args.tp_atr}/{args.sl_atr}" if args.tp_sl_mode == 'atr' \
+        else f"+{args.tp*100:.0f}%/-{args.sl*100:.0f}%"
+    # 滑價一定要出現在成本字串裡——它會被印進報表頁。零滑價是很強的假設，
+    # 不該只藏在 CLI 預設值裡讓讀報表的人看不到。
+    cost_str = (f"買 {args.buy_cost*100:.3f}% 賣 {args.sell_cost*100:.3f}%"
+                f" 滑價 {args.slippage*1e4:.0f}bps")
+
+    trailing_str = f" +Trailing({args.trailing_atr}×ATR)" if args.trailing else ""
+
+    print("=" * 60)
+    tiered_str = f"ON ({V3_PRODUCTION_LABEL})" if args.hybrid_tiered else "OFF (v8.5)"
+    print(f"🎯 AI 台股量化交易系統 — Hybrid Tiered: {tiered_str}")
+    print("=" * 60)
+    print(f"   股池: {mode_str}")
+    print(f"   TP/SL: {tp_sl_str}{trailing_str}  Top-K: {args.top_k}  持倉上限: {args.hold_days} 天")
+    print(f"   成本: {cost_str}")
+    if args.start_date:
+        print(f"   回測期間: {args.start_date} → {args.end_date or '今天'}")
+    else:
+        print(f"   回測天數: {args.days}")
+    print("=" * 60)
+
+    # Phase 1: 資料下載
+    close_df, open_df, high_df, low_df, vol_df = fetch_panel_data(
+        tickers, days=args.days,
+        start_date=args.start_date, end_date=args.end_date,
+    )
+
+    # Phase 2: 動態 Universe 或靜態池
+    if use_dynamic:
+        universe_mask = build_liquid_universe(close_df, vol_df, top_n=args.universe_size)
+    else:
+        universe_mask = None
+
+    # Phase 2.5: 籌碼時序數據（僅用於因子加權；報表顯示使用輕量 API）
+    inst_flow_df = None
+    inst_flow_by_window = None
+    if args.inst_flow > 0:
+        try:
+            inst_flow_df, inst_ratio_df = build_inst_flow_df(
+                list(close_df.columns), close_df, verbose=True)
+        except Exception as e:
+            print(f"   ⚠️ 籌碼數據抓取失敗，跳過: {e}")
+            inst_flow_df = None
+    if args.inst_hold_exit:
+        try:
+            inst_flow_by_window, inst_ratio_df = build_inst_flow_windows(
+                list(close_df.columns), close_df, windows=(5, 10, 20), verbose=True)
+        except Exception as e:
+            print(f"   ⚠️ 法人出場籌碼資料抓取失敗，改用原出場: {e}")
+            inst_flow_by_window = None
+
+    # Phase 3.5: 提前下載 0050 用於 regime filter + 殘差動量
+    market_close = None
+    if args.regime_filter or args.residual_momentum:
+        # ★優先用快照裡的 0050（2026-07-25 稽核 B4）。
+        #   0050 本來就在 panel 裡（preflight 會把 BENCHMARK_TICKER 一起抓），
+        #   但這裡原本另外走 fetch_benchmark 網路重抓——同一個 panel_sha256
+        #   可以對應到不同的 regime 判定，出處宣稱因此不完整。
+        #   ⚠️ 不能從 close_df 取：它已被 load_snapshot 依 EXTENDED_TICKERS
+        #      subset，而 0050 不在那 115 檔裡，會被濾掉（第一版就踩了這個坑）。
+        #      必須直接從快照面板讀。
+        #   regime 比較的是 mkt_val > mkt_ma60，對正比例縮放不變，
+        #   故直接用收盤價即可（不需與 fetch_benchmark 的正規化一致）。
+        _snap_path = os.environ.get('TWSTK_SNAPSHOT')
+        if _snap_path and os.path.exists(_snap_path):
+            try:
+                from twstk.data.contract import load_snapshot as _ls
+                _bc, *_ = _ls(_snap_path, tickers=['0050'],
+                              start=args.start_date, end=args.end_date)
+                if '0050' in _bc.columns and _bc['0050'].notna().sum() > 60:
+                    market_close = _bc['0050'].dropna()
+                    print("\n📊 大盤指數 (0050) 取自共享快照（不重抓）")
+            except Exception as e:
+                print(f"\n⚠️ 快照讀取 0050 失敗，退回即時下載：{e}")
+        if market_close is None:
+            print("\n📊 下載大盤指數 (0050) 用於 regime filter...")
+            bench_raw = fetch_benchmark(
+                '0050', days=args.days,
+                start_date=args.start_date, end_date=args.end_date,
+            )
+            if len(bench_raw) > 0:
+                market_close = bench_raw * bench_raw.iloc[0]
+
+    # Phase 3: 特徵工程
+    total_score, ma_60, atr_df, short_ma = engineer_features(
+        close_df, vol_df, universe_mask,
+        ma_period=args.ma_period,
+        multi_ma=args.multi_ma,
+        ml_weights=args.ml_weights,
+        inst_flow_weight=args.inst_flow,
+        inst_flow_df=inst_flow_df,
+        residual_momentum=args.residual_momentum,
+        trend_quality=args.trend_quality,
+        liq_stability=args.liq_stability,
+        liq_mode=args.liq_mode,
+        market_close=market_close,
+        rsi_weight=args.rsi_weight,
+        breakout_weight=args.breakout_weight,
+        value_weight=args.value_weight,
+        rev_momentum_weight=args.rev_momentum_weight,
+    )
+
+    # Phase 4: 事件驅動回測
+    backtester = build_backtester_from_args(args)
+
+    # 引擎級指紋是跨組裝路徑的正規形式：ablation 走插件路徑驗收、發布走 CLI
+    # 路徑，唯有對「引擎實際參數」取指紋，兩者才查得到同一筆紀錄。
+    # 在 run() 之前取——run() 會在引擎上寫執行結果。
+    from validation.publish_gate import engine_fingerprint as _efp
+    _engine_fp = _efp(backtester)
+
+    # ★VIX 也要走快照（同上理由）。引擎在 regime_sizing/macro_regime 開啟時
+    #   會自行下載 VIX；不傳凍結版本的話，同一個 panel_sha256 會對應到不同結果
+    #   （實測 v8.5 年化差 5pp）。快照沒有就回 None，引擎維持原行為並出聲。
+    frozen_vix = None
+    _snap = os.environ.get('TWSTK_SNAPSHOT')
+    if _snap:
+        try:
+            from twstk.data.contract import load_aux_series
+            frozen_vix = load_aux_series(_snap, 'VIX')
+            print(f"   🌍 VIX 取自共享快照（{len(frozen_vix)} 天）" if frozen_vix is not None
+                  else "   ⚠️ 快照無 VIX → 引擎將即時下載（該次 run 無法逐位元重現）")
+        except Exception as e:
+            print(f"   ⚠️ 讀取快照 VIX 失敗：{e}")
+
     trades_df, equity_df = backtester.run(
         total_score, close_df, open_df, high_df, low_df, ma_60,
         top_k=args.top_k,
         threshold=args.threshold,
+        vix_series=frozen_vix,
         market_close=market_close,
         vol_df=vol_df,
         universe_mask=universe_mask,
@@ -2125,7 +2382,13 @@ def main():
             ew_equity = ew_equity / ew_equity.iloc[0]
 
     # Phase 7: 報表產出
+    # 發布閘門的 fingerprint 必須涵蓋完整策略參數，而不只是報表上顯示的
+    # TP/SL/成本。曾經只放下面十餘個欄位，導致 regime_sizing、
+    # strong_tiers、dynamic_gap_filter 等核心參數改掉後仍沿用舊驗收紀錄。
+    # publish_gate.config_fingerprint 會排除日期、資金、檔名等執行情境鍵；
+    # 這裡採 argparse 的完整集合，新增策略參數時也會自動進 fingerprint。
     config = {
+        **vars(args),
         'tp_pct': args.tp,
         'sl_pct': args.sl,
         'max_hold_days': args.hold_days,
@@ -2139,8 +2402,12 @@ def main():
         'top_k': args.top_k,
         'buy_cost': args.buy_cost,
         'sell_cost': args.sell_cost,
+        'slippage': args.slippage,
+        'artifact_label': args.artifact_label,
         'hybrid_tiered': args.hybrid_tiered,
         'target_ann_vol': 0.15,
+        # 供發布閘門查驗收紀錄；正規形式取自引擎而非本 dict
+        'engine_fingerprint': _engine_fp,
     }
     tiered_scales_log = getattr(backtester, '_tiered_scales_log', None) if args.hybrid_tiered else None
     generate_report(report_trades_df, report_equity_df, total_score, close_df, config,

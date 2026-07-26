@@ -52,29 +52,28 @@ def fetch_finmind(ticker, start, end, token=None):
 
 def fetch_yf(tickers, start, end, adjust):
     import yfinance as yf
-    syms = [f"{t}.TW" for t in tickers]
-    raw = yf.download(syms, start=start, end=end, progress=False,
-                      auto_adjust=adjust)
-    if raw.empty:
-        return {}, {}
-    close, vol = {}, {}
-    for t, s in zip(tickers, syms):
-        try:
-            close[t] = raw[("Close", s)].dropna()
-            vol[t] = raw[("Volume", s)].dropna()
-        except Exception:
-            pass
-    # 上櫃補抓
-    missing = [t for t in tickers if t not in close or close[t].empty]
-    if missing:
-        raw2 = yf.download([f"{t}.TWO" for t in missing], start=start, end=end,
-                           progress=False, auto_adjust=adjust)
-        for t in missing:
+
+    from twstk.data.symbols import probe_tw_then_two
+
+    def _fetch(symbol_map):
+        raw = yf.download(list(symbol_map.values()), start=start, end=end,
+                          progress=False, auto_adjust=adjust)
+        if raw.empty:
+            return {}
+        out = {}
+        for t, s in symbol_map.items():
             try:
-                close[t] = raw2[("Close", f"{t}.TWO")].dropna()
-                vol[t] = raw2[("Volume", f"{t}.TWO")].dropna()
+                c = raw[("Close", s)].dropna()
+                if c.empty:
+                    continue
+                out[t] = (c, raw[("Volume", s)].dropna())
             except Exception:
                 pass
+        return out
+
+    pairs = probe_tw_then_two(tickers, _fetch, warn_label="shadow diff 無報價")
+    close = {t: cv[0] for t, cv in pairs.items()}
+    vol = {t: cv[1] for t, cv in pairs.items()}
     return close, vol
 
 

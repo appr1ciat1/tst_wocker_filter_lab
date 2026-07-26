@@ -113,5 +113,30 @@
     "tone": "bad"
    }
   ]
+ },
+ "paired_benchmark": {
+  "v85": {
+   "n_trades": 303,
+   "mean_net": 0.054886584585887445,
+   "win_rate": 0.6039603960396039,
+   "池等權": {
+    "n_pairs": 303,
+    "n_signal_days": 53,
+    "strategy_mean": 0.03249119185695662,
+    "bench_mean": 0.028113129936135933,
+    "excess": 0.004378061920820682,
+    "t_paired": 0.4480461313975437,
+    "significant": false
+   },
+   "0050": {
+    "n_pairs": 303,
+    "n_signal_days": 53,
+    "strategy_mean": 0.03249119185695662,
+    "bench_mean": 0.030637450700448883,
+    "excess": 0.0018537411565077396,
+    "t_paired": 0.19470784848127143,
+    "significant": false
+   }
+  }
  }
 }

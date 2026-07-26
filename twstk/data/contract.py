@@ -123,6 +123,7 @@ def validate_panel(
     scheduled: bool = True,
     calendar="auto",
     min_completeness: float = 0.90,
+    min_column_coverage: float = 0.50,
     key_tickers=("0050",),
     max_daily_move: float = DEFAULT_MAX_DAILY_MOVE,
     require_volume: bool = True,
@@ -136,7 +137,9 @@ def validate_panel(
         欄位皆為 (日期 x 代號)。
     as_of : 觸發當下的台灣日期（date/Timestamp）。
     scheduled : True=排程(嚴格，最後 bar 必須==預期 session)；False=手動 dispatch(寬鬆)。
-    min_completeness : 最後一根 bar 上「有有效 Close 的代號比例」下限。
+    min_completeness : 最後一根 bar 上「有有效 Close 的代號比例」下限（橫斷面）。
+    min_column_coverage : 每一檔在**整段期間**的 Close 覆蓋率下限（縱向）。
+        擋的是「整檔股票靜默消失」——橫斷面完整度對此幾乎無感。
     key_tickers : 必須存在且最後一根 bar 有效的關鍵標的（預設 0050，regime 依賴它）。
     max_daily_move : 最後一根 bar 上單檔 |日報酬| 超過此值即視為資料異常。
     require_volume : 最後一根 bar 是否要求成交量欄位有效且 > 0。
@@ -214,6 +217,29 @@ def validate_panel(
             names = ", ".join(f"{t}={ret[t]:.0%}" for t in bad.index[:8])
             reasons.append(f"最後 bar 有 {bad.shape[0]} 檔單日 |報酬|>{max_daily_move:.0%}：{names}")
 
+    # 6) 欄位級有效性（★橫斷面完整度看不到的盲區）。
+    #    上面 1~5 全部只檢查「最後一根 bar」。一檔股票整段歷史都是 NaN，
+    #    在最後 bar 完整度上只扣 1/N——實際踩過的坑：4 檔上櫃股因市場後綴
+    #    剝除錯誤而整欄全空，116/120 = 96.7% 仍高於 90% 門檻，契約照樣放行。
+    #    這裡改成逐欄檢查整段覆蓋率，讓「整檔靜默消失」必定 fail-closed。
+    n_rows = len(close)
+    if n_rows > 0:
+        cover = close.notna().sum(axis=0) / n_rows
+        dead = sorted(cover[cover <= 0.0].index.tolist())
+        thin = sorted(cover[(cover > 0.0) & (cover < min_column_coverage)].index.tolist())
+        stats["整欄全空檔數"] = len(dead)
+        stats["覆蓋率不足檔數"] = f"{len(thin)}（門檻 {min_column_coverage:.0%}）"
+        if dead:
+            reasons.append(
+                f"{len(dead)} 檔整段無任何有效 Close：{dead[:10]}"
+                f"（常見成因：市場後綴剝除錯誤導致代號對不上）"
+            )
+        if thin:
+            names = ", ".join(f"{t}={cover[t]:.0%}" for t in thin[:8])
+            reasons.append(
+                f"{len(thin)} 檔整段覆蓋率 < {min_column_coverage:.0%}：{names}"
+            )
+
     return ContractResult(ok=(len(reasons) == 0), reasons=reasons, stats=stats)
 
 
@@ -238,9 +264,18 @@ def _panel_hash(panel_dict: dict) -> str:
             continue
         df = df.sort_index()
         df = df.reindex(sorted(df.columns), axis=1)
-        # 用 pandas 的列雜湊求和，對浮點內容穩定且免整表轉字串
+        # hash_pandas_object(DataFrame) 只涵蓋 index + cell values，不涵蓋
+        # column labels；曾可把 2330 欄改名 FAKE 而 panel_sha256 完全不變。
+        # 欄名與 dtype 都是資料契約的一部分，必須顯式納入。
+        column_schema = [
+            {"label": str(col), "dtype": str(dtype)}
+            for col, dtype in zip(df.columns, df.dtypes)
+        ]
         col_hash = pd.util.hash_pandas_object(df, index=True).values
         h.update(f_.encode())
+        h.update(json.dumps(
+            column_schema, ensure_ascii=False, sort_keys=True,
+        ).encode("utf-8"))
         h.update(np.ascontiguousarray(col_hash).tobytes())
     return h.hexdigest()
 
@@ -266,26 +301,122 @@ def build_manifest(panel, as_of, *, provider: str, auto_adjust: bool,
     }
 
 
-def freeze_snapshot(panel, out_dir, manifest: dict) -> str:
+AUX_SERIES_FILE = "aux_series.csv"
+
+
+def _aux_file_hash(path: str) -> str:
+    """對 aux CSV 的**檔案內容**取 hash。
+
+    ★刻意雜湊檔案而非記憶體物件：CSV 往返會改變浮點的字串表示，
+    對記憶體物件取 hash 會在「剛寫完就讀」時就對不上。
+    要保護的是「載入時拿到的東西是否與凍結時相同」，那就直接對檔案取 hash。
     """
-    凍結一份快照到 out_dir/：panel.pkl + manifest.json。
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def freeze_snapshot(panel, out_dir, manifest: dict, aux_series: dict | None = None) -> str:
+    """
+    凍結一份快照到 out_dir/：panel.pkl + manifest.json（+ aux_series.csv）。
     回傳 out_dir 路徑。四策略之後以 load_snapshot(out_dir) 共讀同一份資料。
+
+    aux_series（2026-07-25 稽核 B4）
+    -------------------------------
+    panel 之外、但**同樣會改變回測結果**的外部序列，最重要的是 **VIX**。
+    稽核查證：即使設了 TWSTK_SNAPSHOT，引擎仍會在 run() 內自行下載 VIX，
+    ai_report 也會另外網路重抓 0050——兩者都繞過快照。實測 VIX 用凍結
+    vs 即時，v8.5 年化差 5pp。
+
+    ⇒ 只凍結 panel 不足以宣稱「當日 run 可重現」。這些序列必須一起凍結、
+      一起 hash，出處才完整。
     """
     os.makedirs(out_dir, exist_ok=True)
     panel_dict = _as_dict(panel)
+    actual_hash = _panel_hash(panel_dict)
+    expected_hash = (manifest or {}).get("panel_sha256")
+    if not expected_hash or expected_hash != actual_hash:
+        raise SnapshotIntegrityError(
+            "拒絕寫入 manifest 與 panel 不一致的快照："
+            f"expected={expected_hash}, actual={actual_hash}"
+        )
     with open(os.path.join(out_dir, "panel.pkl"), "wb") as f:
         pickle.dump({k: panel_dict.get(k) for k in FIELDS}, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    if aux_series:
+        df = pd.DataFrame({k: pd.Series(v) for k, v in aux_series.items()}).sort_index()
+        df.index.name = "date"
+        aux_path = os.path.join(out_dir, AUX_SERIES_FILE)
+        # 固定換行符：否則同一份資料在 Windows/Linux 寫出的檔案 hash 不同
+        df.to_csv(aux_path, encoding="utf-8", lineterminator="\n")
+        manifest = {**(manifest or {}),
+                    "aux_series": sorted(aux_series),
+                    "aux_sha256": _aux_file_hash(aux_path)}
+
     with open(os.path.join(out_dir, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
     return out_dir
 
 
-def load_snapshot(path, tickers=None, start=None, end=None):
+def load_aux_series(path, name=None, *, verify_manifest=True):
+    """從快照讀外部序列（如 VIX）。path 可為快照目錄或其中的 panel.pkl。
+
+    找不到就回 None（舊快照沒有這個檔），呼叫端據此退回即時下載並**出聲**。
+    """
+    d = path if os.path.isdir(path) else os.path.dirname(os.path.abspath(path))
+    f = os.path.join(d, AUX_SERIES_FILE)
+    if not os.path.exists(f):
+        return None
+    df = pd.read_csv(f, index_col=0, parse_dates=True)
+    if verify_manifest:
+        mp = os.path.join(d, "manifest.json")
+        if os.path.exists(mp):
+            try:
+                with open(mp, encoding="utf-8") as mf:
+                    expected = json.load(mf).get("aux_sha256")
+            except Exception:
+                expected = None
+            if expected:
+                actual = _aux_file_hash(f)
+                if actual != expected:
+                    raise SnapshotIntegrityError(
+                        f"aux_series 與 manifest 不一致：expected={expected}, "
+                        f"actual={actual}。拒絕以可能被竄改的資料回測。")
+    if name is None:
+        return df
+    return df[name].dropna() if name in df.columns else None
+
+
+class SnapshotTickerError(RuntimeError):
+    """快照缺少所要求的 ticker，或該 ticker 整段無有效資料。"""
+
+
+class SnapshotIntegrityError(RuntimeError):
+    """panel.pkl 的實際內容與 manifest.json 所宣告的 hash 不一致。"""
+
+
+def load_snapshot(path, tickers=None, start=None, end=None, strict=True,
+                  verify_manifest=True):
     """
     載入凍結快照，回傳與 fetch_panel_data 相同形狀的 5-tuple
     (close, open, high, low, vol)。可選擇 subset 到指定 tickers / 日期區間。
 
     path 可為 snapshot 目錄或直接的 panel.pkl。
+
+    strict=True（預設）時**fail-loud**：所要求的 ticker 若不存在於快照，
+    或存在但 Close 整段全 NaN，直接拋 SnapshotTickerError。
+
+    verify_manifest=True（預設）且同目錄有 manifest.json 時，會重算完整
+    panel hash（含欄名）並核對。manifest 不存在時為相容舊快照而略過；
+    存在但缺 hash／不相符則 fail-closed。
+
+    ★這裡曾經是 `keep = [t for t in tickers if t in out.columns]`，
+    缺股會被**靜默丟棄**。實際踩過的坑：ai_strategy 的市場後綴剝除把
+    '5274.TWO' 寫成 '5274O'，於是快照同時有全空的 '5274' 與有資料的 '5274O'，
+    這裡照樣「成功」載入，四檔上櫃股無聲消失，v8.5 年化憑空少 8.7pp
+    而沒有任何警告。缺資料必須炸，不能默默算下去。
     """
     if os.path.isdir(path):
         pkl = os.path.join(path, "panel.pkl")
@@ -293,6 +424,51 @@ def load_snapshot(path, tickers=None, start=None, end=None):
         pkl = path
     with open(pkl, "rb") as f:
         panel_dict = pickle.load(f)
+
+    if verify_manifest:
+        manifest_path = os.path.join(os.path.dirname(os.path.abspath(pkl)), "manifest.json")
+        if os.path.exists(manifest_path):
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    expected_hash = json.load(f).get("panel_sha256")
+            except Exception as exc:
+                raise SnapshotIntegrityError(
+                    f"無法讀取快照 manifest：{manifest_path}: {exc}"
+                ) from exc
+            actual_hash = _panel_hash(_as_dict(panel_dict))
+            if not expected_hash:
+                raise SnapshotIntegrityError(
+                    f"快照 manifest 缺少 panel_sha256：{manifest_path}"
+                )
+            if actual_hash != expected_hash:
+                raise SnapshotIntegrityError(
+                    "快照內容與 manifest 不一致："
+                    f"expected={expected_hash}, actual={actual_hash}。"
+                    "拒絕以可能被竄改或配錯的資料回測。"
+                )
+
+    if tickers is not None and strict:
+        close = panel_dict.get("Close")
+        if close is None or close.empty:
+            raise SnapshotTickerError(f"快照 {pkl} 沒有 Close 面板")
+        missing = [t for t in tickers if t not in close.columns]
+        empty = [t for t in tickers
+                 if t in close.columns and close[t].notna().sum() == 0]
+        if missing or empty:
+            parts = []
+            if missing:
+                parts.append(f"快照缺少 {len(missing)} 檔：{missing[:10]}")
+            if empty:
+                parts.append(f"{len(empty)} 檔整段無有效 Close：{empty[:10]}")
+            near = [c for c in close.columns
+                    if any(str(c).startswith(str(t)) for t in (missing + empty))]
+            if near:
+                parts.append(f"（快照內疑似對應欄位：{near[:10]} — 檢查市場後綴剝除）")
+            raise SnapshotTickerError(
+                "; ".join(parts)
+                + "。fail-loud：拒絕以殘缺股池繼續回測。"
+                  "確認為刻意排除時，才傳 strict=False。"
+            )
 
     def _slice(df):
         if df is None or df.empty:

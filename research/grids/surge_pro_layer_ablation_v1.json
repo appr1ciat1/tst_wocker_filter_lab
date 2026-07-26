@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "grid_id": "surge-pro-layer-ablation-v1",
+  "strategy_id": "mom_surge_pro",
+  "purpose": "Test whether segmented regime sizing retains alpha under the corrected event clock.",
+  "frozen_on": "2026-07-19",
+  "period": {
+    "start_inclusive": "2019-01-01",
+    "end_inclusive": "2026-07-17",
+    "download_end_exclusive": "2026-07-18"
+  },
+  "execution": {
+    "initial_capital": 1000000,
+    "buy_cost": 0.001425,
+    "sell_cost": 0.004425,
+    "slippage": 0.002,
+    "top_k": 7,
+    "threshold": 2.0
+  },
+  "fixed_strategy_parameters": {
+    "sl_atr": 3.5,
+    "hold_days": 25,
+    "regime_graduated": true,
+    "breadth_regime": true,
+    "regime_floor": 0.0,
+    "dynamic_topk": true,
+    "position_size": 0.1,
+    "strong_regime_mult": 1.25,
+    "strong_breadth_min": 0.55
+  },
+  "baseline_trial_id": "rs1_tiers1_gap1_vix28_scale190",
+  "matched_no_sizing_trial_id": "rs0_tiers0_gap1_vix28_scale190",
+  "varied_parameters": {
+    "regime_sizing": [true, false],
+    "strong_tiers": [
+      [[0.62, 18.0, 1.7], [0.72, 15.0, 1.85]],
+      null
+    ],
+    "dynamic_gap_filter": [true, false],
+    "strong_vix_max_neighborhood": [25.0, 28.0, 31.0],
+    "max_regime_scale_neighborhood": [1.7, 1.8, 1.9]
+  },
+  "acceptance": {
+    "complete_trials": 22,
+    "cscv_partitions": 8,
+    "expected_cscv_splits": 70,
+    "max_pbo": 0.5,
+    "min_baseline_dsr_probability": 0.95,
+    "baseline_must_beat_matched_no_sizing_on": ["cagr", "sharpe"],
+    "best_trial_is_diagnostic_only": true
+  },
+  "trials": [
+    {"trial_id": "rs1_tiers1_gap0_vix25_scale170", "group": "tier_neighborhood", "regime_sizing": true, "strong_tiers": [[0.62, 18.0, 1.7], [0.72, 15.0, 1.85]], "dynamic_gap_filter": false, "strong_vix_max": 25.0, "max_regime_scale": 1.7},
+    {"trial_id": "rs1_tiers1_gap1_vix25_scale170", "group": "tier_neighborhood", "regime_sizing": true, "strong_tiers": [[0.62, 18.0, 1.7], [0.72, 15.0, 1.85]], "dynamic_gap_filter": true, "strong_vix_max": 25.0, "max_regime_scale": 1.7},
+    {"trial_id": "rs1_tiers1_gap0_vix25_scale180", "group": "tier_neighborhood", "regime_sizing": true, "strong_tiers": [[0.62, 18.0, 1.7], [0.72, 15.0, 1.85]], "dynamic_gap_filter": false, "strong_vix_max": 25.0, "max_regime_scale": 1.8},
+    {"trial_id": "rs1_tiers1_gap1_vix25_scale180", "group": "tier_neighborhood", "regime_sizing": true, "strong_tiers": [[0.62, 18.0, 1.7], [0.72, 15.0, 1.85]], "dynamic_gap_filter": true, "strong_vix_max": 25.0, "max_regime_scale": 1.8},
+    {"trial_id": "rs1_tiers1_gap0_vix25_scale190", "group": "tier_neighborhood", "regime_sizing": true, "strong_tiers": [[0.62, 18.0, 1.7], [0.72, 15.0, 1.85]], "dynamic_gap_filter": false, "strong_vix_max": 25.0, "max_regime_scale": 1.9},
+    {"trial_id": "rs1_tiers1_gap1_vix25_scale190", "group": "tier_neighborhood", "regime_sizing": true, "strong_tiers": [[0.62, 18.0, 1.7], [0.72, 15.0, 1.85]], "dynamic_gap_filter": true, "strong_vix_max": 25.0, "max_regime_scale": 1.9},
+    {"trial_id": "rs1_tiers1_gap0_vix28_scale170", "group": "tier_neighborhood", "regime_sizing": true, "strong_tiers": [[0.62, 18.0, 1.7], [0.72, 15.0, 1.85]], "dynamic_gap_filter": false, "strong_vix_max": 28.0, "max_regime_scale": 1.7},
+    {"trial_id": "rs1_tiers1_gap1_vix28_scale170", "group": "tier_neighborhood", "regime_sizing": true, "strong_tiers": [[0.62, 18.0, 1.7], [0.72, 15.0, 1.85]], "dynamic_gap_filter": true, "strong_vix_max": 28.0, "max_regime_scale": 1.7},
+    {"trial_id": "rs1_tiers1_gap0_vix28_scale180", "group": "tier_neighborhood", "regime_sizing": true, "strong_tiers": [[0.62, 18.0, 1.7], [0.72, 15.0, 1.85]], "dynamic_gap_filter": false, "strong_vix_max": 28.0, "max_regime_scale": 1.8},
+    {"trial_id": "rs1_tiers1_gap1_vix28_scale180", "group": "tier_neighborhood", "regime_sizing": true, "strong_tiers": [[0.62, 18.0, 1.7], [0.72, 15.0, 1.85]], "dynamic_gap_filter": true, "strong_vix_max": 28.0, "max_regime_scale": 1.8},
+    {"trial_id": "rs1_tiers1_gap0_vix28_scale190", "group": "tier_neighborhood", "regime_sizing": true, "strong_tiers": [[0.62, 18.0, 1.7], [0.72, 15.0, 1.85]], "dynamic_gap_filter": false, "strong_vix_max": 28.0, "max_regime_scale": 1.9},
+    {"trial_id": "rs1_tiers1_gap1_vix28_scale190", "group": "tier_neighborhood", "regime_sizing": true, "strong_tiers": [[0.62, 18.0, 1.7], [0.72, 15.0, 1.85]], "dynamic_gap_filter": true, "strong_vix_max": 28.0, "max_regime_scale": 1.9},
+    {"trial_id": "rs1_tiers1_gap0_vix31_scale170", "group": "tier_neighborhood", "regime_sizing": true, "strong_tiers": [[0.62, 18.0, 1.7], [0.72, 15.0, 1.85]], "dynamic_gap_filter": false, "strong_vix_max": 31.0, "max_regime_scale": 1.7},
+    {"trial_id": "rs1_tiers1_gap1_vix31_scale170", "group": "tier_neighborhood", "regime_sizing": true, "strong_tiers": [[0.62, 18.0, 1.7], [0.72, 15.0, 1.85]], "dynamic_gap_filter": true, "strong_vix_max": 31.0, "max_regime_scale": 1.7},
+    {"trial_id": "rs1_tiers1_gap0_vix31_scale180", "group": "tier_neighborhood", "regime_sizing": true, "strong_tiers": [[0.62, 18.0, 1.7], [0.72, 15.0, 1.85]], "dynamic_gap_filter": false, "strong_vix_max": 31.0, "max_regime_scale": 1.8},
+    {"trial_id": "rs1_tiers1_gap1_vix31_scale180", "group": "tier_neighborhood", "regime_sizing": true, "strong_tiers": [[0.62, 18.0, 1.7], [0.72, 15.0, 1.85]], "dynamic_gap_filter": true, "strong_vix_max": 31.0, "max_regime_scale": 1.8},
+    {"trial_id": "rs1_tiers1_gap0_vix31_scale190", "group": "tier_neighborhood", "regime_sizing": true, "strong_tiers": [[0.62, 18.0, 1.7], [0.72, 15.0, 1.85]], "dynamic_gap_filter": false, "strong_vix_max": 31.0, "max_regime_scale": 1.9},
+    {"trial_id": "rs1_tiers1_gap1_vix31_scale190", "group": "tier_neighborhood", "regime_sizing": true, "strong_tiers": [[0.62, 18.0, 1.7], [0.72, 15.0, 1.85]], "dynamic_gap_filter": true, "strong_vix_max": 31.0, "max_regime_scale": 1.9},
+    {"trial_id": "rs1_tiers0_gap0_vix28_scale190", "group": "no_strong_tiers", "regime_sizing": true, "strong_tiers": null, "dynamic_gap_filter": false, "strong_vix_max": 28.0, "max_regime_scale": 1.9},
+    {"trial_id": "rs1_tiers0_gap1_vix28_scale190", "group": "no_strong_tiers", "regime_sizing": true, "strong_tiers": null, "dynamic_gap_filter": true, "strong_vix_max": 28.0, "max_regime_scale": 1.9},
+    {"trial_id": "rs0_tiers0_gap0_vix28_scale190", "group": "no_regime_sizing", "regime_sizing": false, "strong_tiers": null, "dynamic_gap_filter": false, "strong_vix_max": 28.0, "max_regime_scale": 1.9},
+    {"trial_id": "rs0_tiers0_gap1_vix28_scale190", "group": "no_regime_sizing", "regime_sizing": false, "strong_tiers": null, "dynamic_gap_filter": true, "strong_vix_max": 28.0, "max_regime_scale": 1.9}
+  ]
+}

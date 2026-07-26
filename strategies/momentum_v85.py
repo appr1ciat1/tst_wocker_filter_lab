@@ -69,7 +69,13 @@ class MomentumV85(EngineStrategy, SignalProducer):
             slippage=exec_cfg.slippage,
             corr_select_max=p.get("corr_select_max", 0.0),
             corr_select_window=p.get("corr_select_window", 60),
-            corr_select_cap=p.get("corr_select_cap", 1),
+            # ★下面兩個 fallback 必須與 ai_report 的 argparse 預設一致
+            #   （--corr-select-cap 2 / --regime-floor 0.10）。兩層預設不同 →
+            #   同一策略在兩條路徑上組出不同引擎；今天兩者都是死參數
+            #   （corr_select_max=0、regime_graduated=False），所以對齊是零
+            #   行為變更，但不對齊就是留給未來的地雷。
+            corr_select_cap=p.get("corr_select_cap", 2),
+            regime_floor=p.get("regime_floor", 0.10),
         )
         return bt.run(
             bundle.total_score, data.close, data.open, data.high, data.low,

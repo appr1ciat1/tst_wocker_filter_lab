@@ -5,7 +5,7 @@ build_paper_page.py — 乾淨的「四策略」Paper / 績效比較頁產生器
 跑四個正式註冊策略（v8.5 / GUARD / SURGE / SURGE PRO）全期回測，產出：
 - 一張正確的折線圖（chart.js，log 軸）：四條權益曲線（各自起點 normalize 為 100）
 - 四策略摘要表：年化 / Sharpe / MDD / Calmar / 交易數
-- 當日最強策略（SURGE PRO）的買入訊號
+- 當日 SURGE PRO 的買入訊號
 
 完全不含 v9 Hybrid Tiered / Core-Satellite 內容。資料只下載一次（共用 MarketData）。
 """
@@ -29,18 +29,18 @@ CAPITAL = 1_000_000
 # (顯示名, 註冊名, 顏色, 一句說明)
 # 顏色採高對比、相互區隔的色相（紅/琥珀/綠/藍），四策略一目了然。
 STRATS = [
-    ("SURGE PRO", "mom_surge_pro", "#ef4444", "去風險 + 更激進分段加碼，報酬最高"),
+    ("SURGE PRO", "mom_surge_pro", "#ef4444", "去風險 + 最激進分段加碼（加碼層未通過統計驗證）"),
     ("SURGE",     "mom_surge",     "#f59e0b", "去風險 + 分段強勢加碼"),
-    ("GUARD",     "mom_guard",     "#10b981", "弱勢去風險，不加碼，最穩健"),
+    ("GUARD",     "mom_guard",     "#10b981", "弱勢去風險、不加碼；全期回撤最淺但 2022 仍輸池"),
     ("v8.5",      "momentum_v85",  "#3b82f6", "純動量基準（優化前）"),
 ]
 
 # 每個追蹤策略各產一個 paper 頁。orders 檔：SURGE PRO 走 ai_report 預設 orders_<date>.json；
 # GUARD 由 workflow 在 GUARD 那步 cp 成 orders_guard_latest.json（否則會被 SURGE PRO 覆蓋）。
 TRACKS = [
-    {"disp": "SURGE PRO", "reg": "mom_surge_pro", "color": "#ef4444", "role": "追最高報酬",
+    {"disp": "SURGE PRO", "reg": "mom_surge_pro", "color": "#ef4444", "role": "最激進加碼",
      "file": "paper_trading.html", "orders": "artifacts/orders_2*.json", "report": "report_surge_pro.html"},
-    {"disp": "GUARD", "reg": "mom_guard", "color": "#10b981", "role": "最穩健·相關性分散",
+    {"disp": "GUARD", "reg": "mom_guard", "color": "#10b981", "role": "回撤最淺·相關性分散",
      "file": "paper_trading_guard.html", "orders": "artifacts/orders_guard_*.json", "report": "report_guard.html"},
 ]
 
@@ -49,36 +49,56 @@ TRACKS = [
 _STOCK_META = None
 
 
-def _stock_meta():
-    """{bare_code: (中文名, 市場)}；來源＝法人快照 code/name/market（快取一次）。"""
+def _stock_names():
+    """{bare_code: 中文名}。
+
+    ★只負責「名字」，不負責「市場別」。
+    市場別一律走 twstk.data.symbols → security_master.json（離線、已版控、3118 檔）。
+
+    這裡曾經是 name+market 都取自法人快照 API，且包在 `except → {}` 裡；
+    API 一失敗就全部退化成 .TW，上櫃股（5274/3529/6547/4743）產生死連結。
+    現在法人快照降級為「補中文名新鮮度」的 overlay，失敗不影響市場判定。
+    """
     global _STOCK_META
     if _STOCK_META is None:
-        _STOCK_META = {}
-        try:
+        names = {}
+        try:                                    # 主來源：離線 security master
+            from twstk.data import security_master as sm
+            for code, rec in (sm.load_master(max_age_days=3650) or {}).items():
+                if rec.get("name"):
+                    names[str(code)] = rec["name"]
+        except Exception as e:
+            print(f"   ⚠️ security master 讀取失敗，中文名可能缺漏: {e}")
+        try:                                    # overlay：法人快照較新的名稱
             from twstk.data.institutional import fetch_stock_three_inst_latest
             for x in (fetch_stock_three_inst_latest() or []):
-                _STOCK_META[str(x.get("code"))] = (x.get("name", ""), str(x.get("market", "")))
+                if x.get("name"):
+                    names[str(x.get("code"))] = x["name"]
         except Exception:
-            _STOCK_META = {}
+            pass                                # 純新鮮度加值，失敗無妨
+        _STOCK_META = names
     return _STOCK_META
 
 
 def _stock_link(ticker):
-    """回傳 HTML <a>：『代碼 中文名』，點擊跳 Yahoo Finance（上市.TW / 上櫃.TWO）。"""
+    """回傳 HTML：『代碼 中文名』，可判定市場時才給 Yahoo Finance 連結。
+
+    ★市場判不出來時回傳純文字，不預設 .TW——寧可不給連結，也不要給死連結。
+    """
     if ticker is None or str(ticker).strip() in ("", "None", "-"):
         return "-"
+    from twstk.data.symbols import strip_market_suffix, yahoo_symbol
+
     raw = str(ticker)
-    code = raw.split(".")[0]
-    name, market = _stock_meta().get(code, ("", ""))
-    if raw.endswith(".TWO"):
-        suf = ".TWO"
-    elif raw.endswith(".TW"):
-        suf = ".TW"
-    else:
-        suf = ".TWO" if market.upper() in ("TPEX", "OTC", "TWO", "櫃買", "上櫃") else ".TW"
-    url = f"https://tw.stock.yahoo.com/quote/{code}{suf}"
+    code = strip_market_suffix(raw)
+    name = _stock_names().get(code, "")
     label = f"{code}{('&nbsp;' + name) if name else ''}"
-    return f"<a href='{url}' target='_blank' rel='noopener'>{label}</a>"
+
+    sym = yahoo_symbol(raw)
+    if not sym:
+        return f"<span title='市場別未知，未提供連結'>{label}</span>"
+    return (f"<a href='https://tw.stock.yahoo.com/quote/{sym}'"
+            f" target='_blank' rel='noopener'>{label}</a>")
 
 
 def _downsample(dates, values, step):
@@ -548,7 +568,7 @@ def build_html(results, sig_file, signals, sells, tm_stats, tm_trades, buy_round
         "<td>去風險＋不過度集中，崩盤年 OOS 最佳</td></tr>"
         "</table>"
         "<p style='color:#cbd5e1;font-size:.88rem;margin:12px 0 0;line-height:1.65'>"
-        "全期 2019–2026 數字 <b style='color:#ef4444'>SURGE PRO</b> 最強（年化／Sharpe／Calmar／PBO 皆居首）；"
+        "全期 2019–2026：SURGE 年化最高、GUARD 回撤最淺；<b>但四者 Sharpe 全低於池等權 1.68、對池 α 皆不顯著</b>（2026-07-25 稽核）。"
         "全天候平衡 <b style='color:#f59e0b'>SURGE</b> 最佳（回撤最淺 −21.5%、崩盤抗跌最好）。"
         "<b>要榨乾回測優勢且能扛崩盤 → SURGE PRO；務實怕崩盤 → SURGE。</b></p>"
     )

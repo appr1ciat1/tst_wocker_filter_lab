@@ -11,3 +11,4 @@ pandas>=2.0,<4
 numpy>=1.24,<3
 matplotlib>=3.6
 exchange_calendars>=4.2   # 交易日判定；缺席時 preflight 走 fail-closed
+pytest>=8,<9              # CI 在抓資料前先跑測試（fail-closed）；缺它整條管線等於沒有回歸防護

@@ -42,31 +42,52 @@
 <body>
   <div class="wrap">
     <h1>AI 台股量化交易</h1>
-    <p class="sub">四個正式策略 + 五個單因子隔離研究／30萬執行版本。原版不覆蓋，每日收盤後自動更新。</p>
+    <p class="sub">四個正式策略 + 五個單因子隔離研究／30萬執行版本。原版不覆蓋。</p>
+    <div class="guide" style="border-left:4px solid #f59e0b;margin:0 0 20px">
+      <h2 style="margin:0 0 6px">⚠️ 這是研究系統，不是已驗證的產品</h2>
+      <p class="gsub" style="margin:0 0 8px">2026-07-25 稽核後的實測結論。點進任一報表可見完整佐證。</p>
+      <table>
+        <tr><th>對照（2019-01~2026-07，20bps 滑價，含息）</th><th style="text-align:right">年化</th><th style="text-align:right">Sharpe</th><th style="text-align:right">MDD</th></tr>
+        <tr><td><b>116 池等權買進持有</b>（＝什麼都不做）</td><td style="text-align:right"><b>29.4%</b></td><td style="text-align:right;color:#4ade80"><b>1.68</b></td><td style="text-align:right">-29.4%</td></tr>
+        <tr><td>0050 買進持有</td><td style="text-align:right">30.5%</td><td style="text-align:right">1.42</td><td style="text-align:right">-33.8%</td></tr>
+        <tr><td>以下四個策略（見卡片）</td><td style="text-align:right">27.5~34.0%</td><td style="text-align:right">1.15~1.31</td><td style="text-align:right">-21~-35%</td></tr>
+      </table>
+      <p class="verdict">
+        ① <b>沒有任何策略的 Sharpe 贏過「等權抱著自己挑的 116 檔」</b>；對池的 α 經
+        Newey-West 修正後 t=0.10~1.51，<b>全部不顯著</b>，Monte Carlo 的 95% CI 全部含 0。<br>
+        ② <b>2022 是唯一的空頭年，所有策略都比「什麼都不做」慘 10~14pp</b>
+        （池 -8.6%，策略 -18.7~-22.8%）。全期 MDD 較淺是路徑效應，不是空頭保護。<br>
+        ③ 唯一顯著的正面證據在<b>訊號層</b>：真實前瞻紀錄下訊號相對池 +5.31pp/20日窗、
+        配對 t=3.44；但加上停利停損出場後降到 +1.04pp（不顯著），
+        <b>出場規則吃掉約 80% 的訊號價值</b>。<br>
+        ⇒ 可驗證的價值目前在「每日提示看哪幾檔」，不在「這個策略年化 X%」。
+      </p>
+    </div>
+    <p class="sub" data-auto="provenance">卡片數字由 build_index.py 直接讀自各策略報表 · 資料日 2026-07-16 · 產生於 2026-07-25 · commit c7aed36。點進報表可見完整成本假設與逐筆交易。</p>
     <div class="grid">
       <a class="card" href="report_surge_pro.html">
-        <span class="tag surgepro">SURGE PRO · 追最高報酬</span>
+        <span class="tag surgepro">SURGE PRO · 最激進加碼</span>
         <p class="name">mom_surge_pro</p>
-        <p class="desc">SURGE 去風險不變 + 更激進分段加碼（弱 0% / 強 12.5% / 更強 17% / 最強 18.5%）。報酬最高，2022 較弱。📈 Paper 模擬追蹤此策略。</p>
-        <p class="stat">全期 年化 <b>67.1%</b> · MDD <b>-22.7%</b> · Calmar <b>2.96</b></p>
+        <p class="desc">SURGE 去風險不變 + 更激進分段加碼（弱 0% / 強 12.5% / 更強 17% / 最強 18.5%）。2022 空頭年 -22.8%（池 -8.6%）。📈 Paper 模擬追蹤此策略。</p>
+        <p class="stat" data-auto="surge_pro">全期 年化 <b>+32.9%</b> · MDD <b>-29.6%</b> · Calmar <b>1.11</b></p>
       </a>
       <a class="card" href="report_surge.html">
-        <span class="tag surge">SURGE · 追報酬</span>
+        <span class="tag surge">SURGE · 分段加碼</span>
         <p class="name">mom_surge</p>
         <p class="desc">去風險 + 分段強勢加碼（弱 0% / 強 12.5% / 更強 14.5% / 最強 17%）。</p>
-        <p class="stat">全期 年化 <b>58.8%</b> · MDD <b>-21.5%</b> · Calmar <b>2.73</b></p>
+        <p class="stat" data-auto="surge">全期 年化 <b>+34.0%</b> · MDD <b>-29.5%</b> · Calmar <b>1.15</b></p>
       </a>
       <a class="card" href="report_guard.html">
-        <span class="tag guard">GUARD · 最穩健</span>
+        <span class="tag guard">GUARD · 回撤最淺</span>
         <p class="name">mom_guard</p>
         <p class="desc">v8.5 + 弱勢去風險（最弱全出 + breadth + 放寬停損）+ 相關性分散選股（同聚落 ≤2 檔），不加碼。</p>
-        <p class="stat">全期 年化 <b>51.6%</b> · MDD <b>-26.8%</b> · Calmar <b>1.93</b></p>
+        <p class="stat" data-auto="guard">全期 年化 <b>+30.9%</b> · MDD <b>-21.0%</b> · Calmar <b>1.47</b></p>
       </a>
       <a class="card" href="report_v85.html">
         <span class="tag base">v8.5 · 基準</span>
         <p class="name">v8.5 baseline</p>
         <p class="desc">純動量 v8.5（binary regime，無去風險 / 無加碼）+ 當日信號 / 籌碼 / 新聞標注。優化前基準。</p>
-        <p class="stat">全期 年化 <b>40.2%</b> · MDD <b>-41.1%</b> · Calmar <b>0.98</b></p>
+        <p class="stat" data-auto="v85">全期 年化 <b>+27.5%</b> · MDD <b>-34.7%</b> · Calmar <b>0.79</b></p>
       </a>
       <a class="card" href="paper_trading.html">
         <span class="tag paper">Paper · SURGE PRO</span>
@@ -128,13 +149,13 @@
       <p class="gsub">四策略<b>選股訊號與弱勢去風險邏輯完全相同</b>，差別只在「強勢時加碼的積極度」與「進場挑剔度」。</p>
       <table>
         <tr><th>市場情境</th><th>最適策略</th><th>原因</th></tr>
-        <tr><td>🚀 強勢延續多頭、VIX 低、龍頭領漲</td><td><b style="color:#fda4af">SURGE PRO</b></td><td>激進分段加碼，最大化報酬</td></tr>
+        <tr><td>🚀 強勢延續多頭、VIX 低、龍頭領漲</td><td><b style="color:#fda4af">SURGE PRO</b></td><td>激進分段加碼（<b>加碼層未通過統計驗證</b>）</td></tr>
         <tr><td>📈 漲跌互現、長期向上的波段</td><td><b style="color:#fdba74">SURGE</b></td><td>去風險＋適度加碼，最佳平衡</td></tr>
         <tr><td>🌊 廣泛齊漲（雨露均霑）</td><td><b style="color:#5eead4">GUARD</b> / <b style="color:#a5b4fc">v8.5</b></td><td>分散／滿倉廣泛參與勝過集中</td></tr>
         <tr><td>〽️ 震盪盤整、方向不明</td><td><b style="color:#5eead4">GUARD</b> / <b style="color:#fdba74">SURGE</b></td><td>graduated 弱勢自動減碼保護</td></tr>
         <tr><td>💥 升息／系統性崩盤（如 2022）</td><td><b style="color:#fdba74">SURGE</b>（最防守）</td><td>去風險＋不過度集中，崩盤年 OOS 最佳</td></tr>
       </table>
-      <p class="verdict">全期 2019–2026 數字 <b style="color:#fda4af">SURGE PRO</b> 最強（年化／Sharpe／Calmar／PBO 皆居首）；全天候平衡 <b style="color:#fdba74">SURGE</b> 最佳（回撤最淺 −21.5%、崩盤抗跌最好）。<b>要榨乾回測優勢且能扛崩盤 → SURGE PRO；務實怕崩盤 → SURGE。</b>GUARD 多被 SURGE 支配，價值在「最單純、不依賴加碼判斷」。</p>
+      <p class="verdict"><b>依 2026-07-25 稽核，先前的「誰最強」排序已作廢。</b>修正同日時序穿越與零滑價後：SURGE 年化最高（34.0%）、GUARD 回撤最淺（−21.0%）且 Sharpe 最高（1.31），SURGE PRO 由第一名退到中段。<b>但四者的 Sharpe 全數低於「等權抱著這 116 檔」的 1.68，對池的 α 也全部不顯著</b>（NW t = 0.10~1.51）。所謂「PBO 居首」找不到任何產出檔佐證。<b>目前沒有依據宣稱任何一個策略較優</b>；差異主要是曝險程度不同（β 對池 0.69~0.76）。</p>
     </div>
     <footer>數字為 2019–2026 凍結回測（動態 Top-60），非未來保證。SURGE/GUARD 詳見 artifacts/v85_optimization_result.md。</footer>
   </div>
