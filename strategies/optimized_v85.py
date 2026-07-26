@@ -7,14 +7,19 @@ mom_guard (GUARD)：v8.5 + 弱勢去風險。graduated regime(floor=0：最弱�
                    全期 ann/Sharpe/MDD/2022 全面改善（見 GUARD_PARAMS 註解）。
 mom_surge (SURGE)：GUARD 的去風險不變 + 分段強勢加碼。只在 0050>MA60/MA20 且 breadth 高、VIX 低時
                    把單筆放大——四段式：弱勢 0% / 強 12.5% / 更強(breadth≥.65,VIX≤20) 14.5% /
-                   最強(breadth≥.75,VIX≤15) 17%。追更高報酬，風險與 GUARD 相當甚至更低。
+                   最強(breadth≥.75,VIX≤15) 17%。年化最高(34.0%)，但**風險明顯高於 GUARD**：
+                   MDD −29.5% vs −21.0%、Calmar 1.15 vs 1.47，且 2022 是四者最差(−22.8%)。
+                   （2026-07-26 更正：舊註解寫「風險與 GUARD 相當甚至更低」，與實測相反。）
 
 兩者都走 canonical 引擎路徑（atr_df 不傳→引擎內部 ATR；consec_loss_limit=3 預設連損熔斷），
 與 ai_report.py / twstk.backtest.runner 一致；訊號重用 MomentumV85.prepare()（同一組 v8.5 評分）。
 
 mom_surge_pro (SURGE PRO)：SURGE 去風險不變 + 更激進分段加碼（VIX 門檻放寬到 28、tier 倍數
                    更高、cap 1.9、hold 25）。四段式：弱 0% / 強 12.5% / 更強(breadth≥.62,VIX≤18)
-                   17% / 最強(breadth≥.72,VIX≤15) 18.5%。追最高報酬，代價是 2022 較弱。
+                   17% / 最強(breadth≥.72,VIX≤15) 18.5%。
+                   ★這一層**沒有通過統計驗證**：修正時序穿越與零滑價後，SURGE PRO 年化 32.9%
+                   低於不加這層的 SURGE 34.0%，MDD/Calmar/Sharpe 三項也全輸——四項指標
+                   沒有任何一項第一。舊註解「追最高報酬」是被 bug 撐起來的，已作廢。
 
 注意：舊版曾列出的 2019-01→2026-06 績效來自修正前事件時鐘與舊統計
 實作，只保留為研究沿革，不得作為目前績效宣稱。正式結果必須由凍結資料、

@@ -103,6 +103,13 @@ def build(root: Path) -> tuple[str, str]:
         )
         html = _replace_auto(html, key, inner)
 
+    # 四策略實測對照表：與 paper 頁共用同一份產生器，同樣回讀報表。
+    # ★2026-07-26：這裡原本是手寫的「市場情境 → 最適策略」表，其中
+    #   「💥 崩盤 → SURGE（最防守）」與實測完全相反（SURGE 是 2022 最差的）。
+    #   手寫＝會漂掉，所以改成回填。
+    from strategy_facts import build_guide_html
+    html = _replace_auto(html, "facts", build_guide_html(str(root)))
+
     data_day = sorted(stamps)[-1] if stamps else "未知"
     prov = (
         f"卡片數字由 build_index.py 直接讀自各策略報表 · "

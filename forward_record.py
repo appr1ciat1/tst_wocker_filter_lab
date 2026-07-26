@@ -321,7 +321,7 @@ def main():
     # （以訊號日為單位，同日多筆先取平均，避免自由度灌水）。
     # 實測差異極大——配對法下 v85 對池是 +5.31pp、t=3.44（顯著），
     # 舊做法完全看不出來。且基準加入**116 池等權**：稽核已證實池等權
-    # Sharpe 1.68 高於任何策略，「贏過 0050」不構成價值主張。
+    # Sharpe 高於任何策略，「贏過 0050」不構成價值主張。
     paired_stats = {}
     try:
         from forward_benchmark import format_report, paired_compare

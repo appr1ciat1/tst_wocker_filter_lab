@@ -23,6 +23,7 @@ from strategies.registry import get_strategy
 from strategies.base import ExecConfig
 from twstk.backtest.engine import RunConfig, build_market_data
 from twstk.backtest.metrics import compute_risk_metrics
+from strategy_facts import build_guide_html, strategy_facts  # noqa: F401
 
 CAPITAL = 1_000_000
 
@@ -543,35 +544,25 @@ def build_html(results, sig_file, signals, sells, tm_stats, tm_trades, buy_round
             f"近 {ninety['n']} 個交易日（{ninety['start']} → {ninety['end']}）："
             "4 策略回測權益（實線）vs ETF 買進持有（虛線），各自起點＝100（線性軸）。"
             "<br>⚠️ 此窗為單向強漲段（大盤 0050 約 +40%）：不去風險的 v8.5 滿倉故短線報酬最高、"
-            "SURGE PRO 去風險最多（動態減碼）故短線最低——但 <b>全期年化反而是 SURGE PRO 最高</b>"
-            "（見上方摘要表），去風險的價值要在崩盤年才顯現。<b>短窗排序不代表長期優劣。</b>"
+            "SURGE PRO 去風險最多（動態減碼）故短線最低。<b>短窗排序不代表長期優劣</b>——"
+            "但反過來也一樣：<b>去風險在 2019–2026 唯一的空頭年（2022）並沒有換到保護</b>，"
+            "四策略全部輸給池等權買進持有 4.8～14.4pp（見報表逐年表）。"
         )
     else:
         n90_labels = "[]"
         n90_ds_js = "[]"
         n90_note = "資料不足，無法繪製近 90 天權益曲線。"
 
-    # 選哪個策略？（依市場情境）——靜態對照表，與 index 首頁一致（用 paper 圖配色）
-    guide_html = (
-        "<p style=\"color:#94a3b8;margin:0 0 8px\">四策略<b>選股訊號與弱勢去風險邏輯完全相同</b>，"
-        "差別只在強勢時加碼的積極度與進場挑剔度。</p>"
-        "<table><tr><th>市場情境</th><th>最適策略</th><th>原因</th></tr>"
-        "<tr><td>🚀 強勢延續多頭、VIX 低、龍頭領漲</td><td><b style='color:#ef4444'>SURGE PRO</b></td>"
-        "<td>激進分段加碼，最大化報酬</td></tr>"
-        "<tr><td>📈 漲跌互現、長期向上的波段</td><td><b style='color:#f59e0b'>SURGE</b></td>"
-        "<td>去風險＋適度加碼，最佳平衡</td></tr>"
-        "<tr><td>🌊 廣泛齊漲（雨露均霑）</td><td><b style='color:#10b981'>GUARD</b> / <b style='color:#3b82f6'>v8.5</b></td>"
-        "<td>分散／滿倉廣泛參與勝過集中</td></tr>"
-        "<tr><td>〽️ 震盪盤整、方向不明</td><td><b style='color:#10b981'>GUARD</b> / <b style='color:#f59e0b'>SURGE</b></td>"
-        "<td>graduated 弱勢自動減碼保護</td></tr>"
-        "<tr><td>💥 升息／系統性崩盤（如 2022）</td><td><b style='color:#f59e0b'>SURGE</b>（最防守）</td>"
-        "<td>去風險＋不過度集中，崩盤年 OOS 最佳</td></tr>"
-        "</table>"
-        "<p style='color:#cbd5e1;font-size:.88rem;margin:12px 0 0;line-height:1.65'>"
-        "全期 2019–2026：SURGE 年化最高、GUARD 回撤最淺；<b>但四者 Sharpe 全低於池等權 1.68、對池 α 皆不顯著</b>（2026-07-25 稽核）。"
-        "全天候平衡 <b style='color:#f59e0b'>SURGE</b> 最佳（回撤最淺 −21.5%、崩盤抗跌最好）。"
-        "<b>要榨乾回測優勢且能扛崩盤 → SURGE PRO；務實怕崩盤 → SURGE。</b></p>"
-    )
+    # ★下表讀自四份報表，而本頁上方的摘要表來自本頁**自己當天**的回測。
+    #   兩者資料日不同時數字會不一樣，而且差距可能很大——2026-07-26 實測，
+    #   同程式同參數同視窗、只差下載日期一天，v8.5 年化就從 27.5% 變 18.8%。
+    #   所以必須把這件事寫在讀者眼前，不能讓兩組數字無聲打架。
+    guide_html = build_guide_html(reproducibility_note=(
+        "⚠️ <b>本區數字讀自四份報表，與本頁上方摘要表的資料日不同</b>，兩者會有落差。"
+        "2026-07-26 實測：同一份程式、同一組參數、同一個回測視窗，僅下載日期相差一天，"
+        "v8.5 年化即由 27.5% 變為 18.8%（MDD −34.7%→−36.7%）。"
+        "成因是資料源會<b>回溯調整歷史價格</b>（七月為台股除權息旺季，抽樣 40 檔有 14 檔近月除息），"
+        "動量排名隨之改變、選股就變了。<b>任何單一數字都不該被當成穩定值看待。</b>"))
 
     inst_widget_html = build_inst_widget()
 
@@ -620,7 +611,7 @@ def build_html(results, sig_file, signals, sells, tm_stats, tm_trades, buy_round
    <canvas id="eq90" height="150"></canvas>
  </div>
 
- <h2>📌 選哪個策略？（依市場情境）</h2>
+ <h2>📌 四策略實測對照（非情境推薦）</h2>
  <div class="card">{guide_html}</div>
 
  <h2>📋 今日買賣訊號（{t_disp}）</h2>

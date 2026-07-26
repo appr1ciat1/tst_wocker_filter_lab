@@ -233,12 +233,15 @@ jobs:
             --slippage ${{ github.event.inputs.slippage || '0.002' }} \
             --start-date 2019-01-01 --eval-start 2019-01-01
           # report_surge_pro.html 用自己的圖檔；保留 stock_report.html + backtest_chart.png 當主報表
+          # ★標題只描述機制，不宣稱排名（2026-07-26）：修正時序穿越與零滑價後，
+          #   SURGE PRO 年化 32.9% 已低於 SURGE 34.0%，且 MDD/Calmar/Sharpe 三項也都輸，
+          #   舊標題「追最高報酬」是被自己的 bug 撐起來的。排名會隨資料變，標題不該綁排名。
           sed -e 's#backtest_chart.png#chart_surge_pro.png#g' \
-              -e 's#AI 台股量化交易 v8\.5#AI 台股量化交易 · SURGE PRO 追最高報酬#g' \
+              -e 's#AI 台股量化交易 v8\.5#AI 台股量化交易 · SURGE PRO 分段加碼#g' \
               stock_report.html > report_surge_pro.html
           cp backtest_chart.png chart_surge_pro.png
-          # 主報表 stock_report.html 的標題也改成 SURGE PRO（它就是最強策略）
-          sed -i 's#AI 台股量化交易 v8\.5#AI 台股量化交易 · SURGE PRO 追最高報酬#g' stock_report.html
+          # 主報表 stock_report.html 沿用 SURGE PRO 這份（歷史相容：舊連結指向它）
+          sed -i 's#AI 台股量化交易 v8\.5#AI 台股量化交易 · SURGE PRO 分段加碼#g' stock_report.html
 
       # ── 著陸頁數字：直接從剛產生的四份報表回填 ──
       # index.html 原本是手寫的、沒有任何腳本會更新，但它是 deploy 的必要檔案＝
