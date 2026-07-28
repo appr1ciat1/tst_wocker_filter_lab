@@ -121,3 +121,50 @@ def test_ai_report_prefers_snapshot_for_market_and_vix():
     assert "tickers=['0050']" in src, "未從快照面板直接讀 0050"
     assert "market_close = close_df['0050']" not in src, \
         "0050 不可從 close_df 取（已被 EXTENDED_TICKERS subset 濾掉）"
+
+
+def test_report_benchmark_row_also_comes_from_snapshot():
+    """★報表上的「0050 年化 / Sharpe / MDD / 超額報酬 α」也必須凍結。
+
+    Phase 3.5 的 regime 用 0050 早就走快照了，但 Phase 6 算給讀者看的那組
+    benchmark 數字原本仍即時下載 —— 同一個 panel_sha256 會對到不同的 0050
+    數字，而 README 與 index 又引用它。2026-07-28 補上。
+    """
+    code = [ln for ln in open("ai_report.py", encoding="utf-8").read().splitlines()
+            if not ln.lstrip().startswith("#")]
+    src = "\n".join(code)
+    assert "_snapshot_benchmark('0050'" in src, "Phase 6 的 0050 未優先走快照"
+    assert "def _snapshot_benchmark(" in src
+
+
+def test_snapshot_benchmark_normalises_to_one(tmp_path, monkeypatch):
+    """必須與 fetch_benchmark 同樣「起點歸一」，否則年化／MDD 會失真。"""
+    import numpy as np
+
+    import ai_report
+
+    idx = pd.bdate_range("2024-01-01", periods=300)
+    panel = {f: pd.DataFrame(1.0, index=idx, columns=["0050", "2330"]) for f in FIELDS}
+    panel["Close"]["0050"] = np.linspace(50.0, 100.0, len(idx))
+    man = build_manifest(panel, "2025-02-28", provider="test", auto_adjust=True)
+    out = str(tmp_path / "snap")
+    freeze_snapshot(panel, out, man)
+
+    monkeypatch.setenv("TWSTK_SNAPSHOT", os.path.join(out, "panel.pkl"))
+    s = ai_report._snapshot_benchmark("0050", None, None)
+    assert s is not None
+    assert s.iloc[0] == pytest.approx(1.0)
+    assert s.iloc[-1] == pytest.approx(2.0)      # 50 → 100
+
+
+def test_snapshot_benchmark_returns_none_when_absent(tmp_path, monkeypatch):
+    """快照沒有這檔（如 00981A）→ 回 None，呼叫端照舊下載。"""
+    import ai_report
+
+    idx = pd.bdate_range("2024-01-01", periods=300)
+    panel = {f: pd.DataFrame(1.0, index=idx, columns=["2330"]) for f in FIELDS}
+    man = build_manifest(panel, "2025-02-28", provider="test", auto_adjust=True)
+    out = str(tmp_path / "snap2")
+    freeze_snapshot(panel, out, man)
+    monkeypatch.setenv("TWSTK_SNAPSHOT", os.path.join(out, "panel.pkl"))
+    assert ai_report._snapshot_benchmark("00981A", None, None) is None

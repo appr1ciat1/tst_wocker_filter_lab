@@ -2111,6 +2111,34 @@ def parse_args():
     return parser.parse_args()
 
 
+def _snapshot_benchmark(ticker, start, end):
+    """從凍結快照取 benchmark 的**買進持有淨值**（起點 = 1）；取不到回 None。
+
+    與 Phase 3.5 的 regime 用法不同：regime 只比 `價 > MA60`，對正比例縮放不變，
+    所以直接用收盤價即可；但這裡要算年化／Sharpe／MDD 與超額報酬，必須與
+    fetch_benchmark 的正規化一致（起點歸一），否則報表上的 0050 數字會失真。
+
+    ⚠️ 一律對快照指名 tickers=[ticker]，不可從 close_df 取——它已被
+       EXTENDED_TICKERS subset，0050 不在那 115 檔裡（第一版踩過這個坑）。
+    """
+    snap = os.environ.get('TWSTK_SNAPSHOT')
+    if not snap or not os.path.exists(snap):
+        return None
+    try:
+        from twstk.data.contract import load_snapshot as _ls
+        close, *_ = _ls(snap, tickers=[str(ticker)], start=start, end=end)
+        if str(ticker) not in close.columns:
+            return None
+        s = close[str(ticker)].dropna()
+        if len(s) < 60:
+            return None
+        print(f"   📊 {ticker} 取自共享快照（不重抓）")
+        return s / s.iloc[0]
+    except Exception as e:                       # noqa: BLE001
+        print(f"   ⚠️ 快照讀取 {ticker} 失敗，退回即時下載：{e}")
+        return None
+
+
 def build_backtester_from_args(args):
     """由 argparse args 建構回測引擎。
 
@@ -2266,7 +2294,7 @@ def main():
             print(f"   ⚠️ 法人出場籌碼資料抓取失敗，改用原出場: {e}")
             inst_flow_by_window = None
 
-    # Phase 3.5: 提前下載 0050 用於 regime filter + 殘差動量
+    # Phase 3.5: 提前取得 0050 用於 regime filter + 殘差動量
     market_close = None
     if args.regime_filter or args.residual_momentum:
         # ★優先用快照裡的 0050（2026-07-25 稽核 B4）。
@@ -2367,10 +2395,17 @@ def main():
     # Phase 6: Benchmark
     print("\n📊 載入 Benchmark 進行比較...")
     benchmark_start = args.eval_start or args.start_date
-    benchmark_equity = fetch_benchmark(
-        '0050', days=args.days,
-        start_date=benchmark_start, end_date=args.end_date,
-    )
+    # ★0050 也要優先走快照（2026-07-28）。這裡算出來的
+    #   「0050 年化 / Sharpe / MDD / 超額報酬 α」會印在報表上，
+    #   README 與 index 又引用它。regime filter 那邊（Phase 3.5）已經凍結了，
+    #   這裡若仍即時下載，同一個 panel_sha256 就會對到不同的 benchmark 數字——
+    #   出處宣稱一樣不完整。
+    benchmark_equity = _snapshot_benchmark('0050', benchmark_start, args.end_date)
+    if benchmark_equity is None:
+        benchmark_equity = fetch_benchmark(
+            '0050', days=args.days,
+            start_date=benchmark_start, end_date=args.end_date,
+        )
     benchmark2_equity = fetch_benchmark(
         '00981A', days=args.days,
         start_date=benchmark_start, end_date=args.end_date,
