@@ -65,9 +65,22 @@
 > 用同一天的資料跑出 17.17% vs 17.0%、MDD 皆 −36.7%、交易皆 830 筆——兩層等價成立。
 > 也**不是**池縮水（115 檔全數下載成功）。
 >
-> ⇒ **任何單一數字都只在「那次下載」成立。** 要可重現就必須保留凍結快照
-> （`twstk.data.contract.freeze_snapshot` 已實作，但快照目前被 `.gitignore` 排除，
-> 只留 manifest，所以既有的發布數字事後無法驗證）。這是目前最該優先處理的缺口。
+> ⇒ **任何單一數字都只在「那次下載」成立。**
+>
+> **2026-07-28 已補上**（`snapshot_store.py`）：每個發布日的完整面板打包上傳到
+> GitHub Release（5.3 MB/份，不進 git 以免拖垮 clone），git 的 `manifest.json`
+> 記下 asset 名與 `panel_sha256` 當索引。之後任何一天的數字都能取回原始資料重算：
+>
+> ```bash
+> python snapshot_store.py fetch 2026-07-28 --dest artifacts/   # 下載並驗證 sha256
+> TWSTK_SNAPSHOT=artifacts/snapshot_20260728/panel.pkl python ai_report.py ...
+> ```
+>
+> 同時讓 paper 頁也共讀 preflight 凍結的那份面板（原本它自己另外下載，
+> 同一次 CI 內就可能與報表不同源）。
+>
+> **仍未做**：把這個雜訊量化成誤差棒。在那之前，本頁所有單點數字都應視為
+> 「某一次下載的結果」，而不是策略的性質。
 
 以下每個數字都直接取自四份報表（點進去可核對），窗口為 n=1766 個交易日：
 

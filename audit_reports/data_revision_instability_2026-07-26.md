@@ -83,14 +83,43 @@ paper 頁，重跑後發現 paper 頁的摘要表與四份報表差了 10pp：
 
 ## 該做什麼（依優先序）
 
-1. **保留快照**：把 `artifacts/snapshot_*/panel.pkl` 納入版控（或推到 release/LFS），
-   讓每次發布可事後重現。現在 `.gitignore` 只留 manifest 等於留了收據沒留貨。
-2. **發布時同一份資料跑到底**：報表與 paper 頁必須共用同一次下載
-   （目前 CI 是分步各自下載，跨步驟就可能踩到不同的調整狀態）。
-3. **量化這個雜訊**：連續 N 天用同視窗重跑，把年化的日間標準差算出來，
-   當成所有績效宣稱的誤差棒。沒有誤差棒的單點數字不該再對外呈現。
-4. **考慮換未還原資料源 + 自行處理股利**：把「調整」變成自己控制、可版控的一步，
-   而不是每天被上游改寫。（注意 FinMind 有零價污染，見既有筆記。）
+### 1. 保留快照 ✅ 已實作（2026-07-28）
+
+`snapshot_store.py` + workflow 的 `Retain snapshot for reproducibility` 步驟。
+
+- 打包 `panel.pkl + manifest.json + aux_series.csv` 成單一 `.tar.gz`
+  （實測 8.54 MB → **5.31 MB**），上傳到 GitHub Release tag `snapshots`。
+- **不進 git**：每日 5.3 MB × 250 交易日 ≈ 1.3 GB/年，且二進位無法 delta，會拖垮 clone。
+  git 仍只留 `manifest.json`，但其中新增 `release_asset` 欄位指向該份 asset ——
+  **版控的收據直接指向可下載的貨**，鏈條接起來。
+- asset 命名為 `snapshot_<as_of>_<hash8>.tar.gz`：同一天若因資料被改寫而重跑，
+  兩份都留得住，不會無聲互相覆蓋（這正是本次事件的形狀）。
+- `fetch` 下載後**立刻驗證** panel/aux 的 sha256（複用 contract 的載入器，
+  不另寫第二份比對邏輯）；竄改、路徑穿越、多頂層目錄都會被擋。
+- 取用：`python snapshot_store.py fetch 2026-07-28 --dest artifacts/`
+
+### 2. 同一份資料跑到底 ✅ 已實作（2026-07-28）
+
+原本 preflight 凍結的共享快照**只有四份報表（ai_report）在讀**；
+paper 頁走 `twstk.backtest.engine.build_market_data`，一律重新下載
+⇒ 同一次 CI 內，報表與 paper 頁可能拿到不同的歷史。
+
+已讓 `build_market_data` 優先讀 `TWSTK_SNAPSHOT`（面板與 benchmark 皆是），
+沒設或載入失敗才回退下載，**且會印警告**——這裡靜默降級等於把「兩份資料」
+偽裝成「一份資料」，是最難查的那種錯。
+benchmark 特別指名 `tickers=[ticker]` 對快照取，不從已 subset 的面板取
+（ai_report 曾犯過這個錯，0050 被 EXTENDED_TICKERS 濾掉，修正完全沒生效）。
+
+### 3. 量化這個雜訊（未做）
+
+連續 N 天用同視窗重跑，把年化的日間標準差算出來，當成所有績效宣稱的誤差棒。
+**沒有誤差棒的單點數字不該再對外呈現。** 快照留存上線後，這件事變得可做——
+可以直接對不同日期的快照跑同一組參數，得到分佈而非單點。
+
+### 4. 考慮換未還原資料源 + 自行處理股利（未做）
+
+把「調整」變成自己控制、可版控的一步，而不是每天被上游改寫。
+（注意 FinMind 有零價污染，見既有筆記。）
 
 ## 復現方式
 
